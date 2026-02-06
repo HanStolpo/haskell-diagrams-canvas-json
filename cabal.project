@@ -1,0 +1,28 @@
+packages:
+  ./diagrams-canvas-json
+
+-- See: https://cabal.readthedocs.io/en/latest/nix-local-build.html#developing-multiple-packages
+optimization:
+  False
+
+-- Enable tests by default, so cabal doesn't reconfigure when you run a test,
+tests:
+  true
+
+-- Same reasoning as for tests
+benchmarks:
+  true
+
+-- If you don't want to use this, you probably want to add at least -j2 to
+-- ghc-options
+semaphore:
+  true
+
+package *
+  -- -haddock is needed to let HLS get Haddock from interface files, which
+  -- makes documentation work more reliably
+  ghc-options:
+    -fwrite-ide-info -fhide-source-paths -msse4.2 -haddock
+
+-- Breaks digrams-gi-cairo
+constraints: diagrams-lib < 1.5
