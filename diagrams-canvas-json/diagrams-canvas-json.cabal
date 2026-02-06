@@ -22,11 +22,20 @@ common warnings
 
 library
   import:           warnings
-  exposed-modules:  MyLib
+  exposed-modules:  Diagrams.Backend.CanvasJson
 
   -- other-modules:
   -- other-extensions:
-  build-depends:    base ^>=4.20.2.0
+  build-depends:
+    , aeson
+    , base          ^>=4.20.2.0
+    , colour
+    , containers
+    , diagrams-core
+    , diagrams-lib
+    , linear
+    , mtl
+
   hs-source-dirs:   src
   default-language: GHC2021
 
@@ -37,8 +46,19 @@ executable diagrams-canvas-json
   -- other-modules:
   -- other-extensions:
   build-depends:
+    , aeson
     , base                  ^>=4.20.2.0
+    , bytestring
+    , containers
+    , diagrams
     , diagrams-canvas-json
+    , diagrams-lib
+    , diagrams-svg
+    , http-types
+    , lucid-svg
+    , scotty
+    , svg-builder
+    , text
 
   hs-source-dirs:   exe
   default-language: GHC2021

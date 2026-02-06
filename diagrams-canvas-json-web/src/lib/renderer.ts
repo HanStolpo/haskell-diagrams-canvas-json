@@ -1,127 +1,176 @@
-import type {
-  Diagram,
-  Primitive,
-  Path,
-  PathSegment,
-  StrokeStyle,
-  FillStyle,
-  Transform,
-  Color,
-} from "./types.js";
+import type { CanvasDiagram, CanvasCommand, Color, BBox } from "./types.js";
 
-/** Convert Color to CSS rgba string */
-function colorToCss(color: Color): string {
-  return `rgba(${color.r}, ${color.g}, ${color.b}, ${color.a})`;
+/** Convert RGBA values (0-255 for RGB, 0-1 for alpha) to CSS string */
+function rgbaToCss(r: number, g: number, b: number, a: number): string {
+  return `rgba(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)}, ${a})`;
 }
 
-/** Apply stroke style to canvas context */
-function applyStrokeStyle(ctx: CanvasRenderingContext2D, style: StrokeStyle): void {
-  ctx.strokeStyle = colorToCss(style.color);
-  ctx.lineWidth = style.width;
-  if (style.lineCap) ctx.lineCap = style.lineCap;
-  if (style.lineJoin) ctx.lineJoin = style.lineJoin;
-  if (style.dashArray) ctx.setLineDash(style.dashArray);
-  if (style.dashOffset) ctx.lineDashOffset = style.dashOffset;
-}
-
-/** Apply fill style to canvas context */
-function applyFillStyle(ctx: CanvasRenderingContext2D, style: FillStyle): void {
-  ctx.fillStyle = colorToCss(style.color);
-}
-
-/** Apply transform to canvas context */
-function applyTransform(ctx: CanvasRenderingContext2D, transform: Transform): void {
-  ctx.transform(transform.a, transform.b, transform.c, transform.d, transform.e, transform.f);
-}
-
-/** Render a path to the canvas context */
-function renderPath(ctx: CanvasRenderingContext2D, path: Path): void {
-  ctx.beginPath();
-  for (const segment of path.segments) {
-    renderPathSegment(ctx, segment);
+/** Convert line cap number to canvas string */
+function lineCapToString(cap: number): CanvasLineCap {
+  switch (cap) {
+    case 1: return "round";
+    case 2: return "square";
+    default: return "butt";
   }
 }
 
-/** Render a single path segment */
-function renderPathSegment(ctx: CanvasRenderingContext2D, segment: PathSegment): void {
-  switch (segment.type) {
-    case "moveTo":
-      ctx.moveTo(segment.point.x, segment.point.y);
-      break;
-    case "lineTo":
-      ctx.lineTo(segment.point.x, segment.point.y);
-      break;
-    case "quadraticCurveTo":
-      ctx.quadraticCurveTo(segment.control.x, segment.control.y, segment.end.x, segment.end.y);
-      break;
-    case "bezierCurveTo":
-      ctx.bezierCurveTo(
-        segment.control1.x,
-        segment.control1.y,
-        segment.control2.x,
-        segment.control2.y,
-        segment.end.x,
-        segment.end.y
-      );
-      break;
-    case "arcTo":
-      ctx.arcTo(
-        segment.control1.x,
-        segment.control1.y,
-        segment.control2.x,
-        segment.control2.y,
-        segment.radius
-      );
-      break;
-    case "arc":
-      ctx.arc(
-        segment.center.x,
-        segment.center.y,
-        segment.radius,
-        segment.startAngle,
-        segment.endAngle,
-        segment.counterclockwise ?? false
-      );
-      break;
-    case "closePath":
-      ctx.closePath();
-      break;
+/** Convert line join number to canvas string */
+function lineJoinToString(join: number): CanvasLineJoin {
+  switch (join) {
+    case 1: return "round";
+    case 2: return "bevel";
+    default: return "miter";
   }
 }
 
-/** Render a primitive to the canvas */
-function renderPrimitive(ctx: CanvasRenderingContext2D, primitive: Primitive): void {
-  switch (primitive.type) {
-    case "path":
-      renderPath(ctx, primitive.path);
-      if (primitive.fill) {
-        applyFillStyle(ctx, primitive.fill);
-        ctx.fill();
-      }
-      if (primitive.stroke) {
-        applyStrokeStyle(ctx, primitive.stroke);
-        ctx.stroke();
-      }
-      break;
+/**
+ * Calculate transform to fit diagram bounds into canvas with padding
+ * Returns transform parameters and scale factor
+ */
+function calculateFitTransform(
+  canvasWidth: number,
+  canvasHeight: number,
+  bounds: BBox,
+  padding: number = 0.9
+): { a: number; b: number; c: number; d: number; e: number; f: number; scale: number } {
+  const { minX, minY, maxX, maxY } = bounds;
+  const diagramWidth = maxX - minX;
+  const diagramHeight = maxY - minY;
 
-    case "text":
-      if (primitive.font) ctx.font = primitive.font;
-      if (primitive.fill) {
-        applyFillStyle(ctx, primitive.fill);
-        ctx.fillText(primitive.text, primitive.position.x, primitive.position.y);
-      }
-      break;
+  // Handle empty or zero-size diagrams
+  if (diagramWidth <= 0 || diagramHeight <= 0) {
+    return { a: 100, b: 0, c: 0, d: -100, e: canvasWidth / 2, f: canvasHeight / 2, scale: 100 };
+  }
 
-    case "group":
+  // Calculate scale to fit with padding (preserving aspect ratio)
+  const scaleX = (canvasWidth * padding) / diagramWidth;
+  const scaleY = (canvasHeight * padding) / diagramHeight;
+  const scale = Math.min(scaleX, scaleY);
+
+  // Calculate center of diagram
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+
+  // Transform: scale, flip Y, then translate to center in canvas
+  // Canvas transform matrix: [a, b, c, d, e, f]
+  // x' = a*x + c*y + e
+  // y' = b*x + d*y + f
+  // We want: scale by 'scale', flip Y (negate d), center the result
+  const a = scale;
+  const b = 0;
+  const c = 0;
+  const d = -scale; // Flip Y axis
+  const e = canvasWidth / 2 - centerX * scale;
+  const f = canvasHeight / 2 + centerY * scale; // + because Y is flipped
+
+  return { a, b, c, d, e, f, scale };
+}
+
+/**
+ * Execute a single canvas command
+ * @param scale - The current transform scale, used to adjust line widths
+ */
+function executeCommand(ctx: CanvasRenderingContext2D, cmd: CanvasCommand, scale: number): void {
+  const opcode = cmd[0];
+
+  switch (opcode) {
+    // State management
+    case "S":
       ctx.save();
-      if (primitive.transform) {
-        applyTransform(ctx, primitive.transform);
-      }
-      for (const child of primitive.children) {
-        renderPrimitive(ctx, child);
-      }
+      break;
+    case "R":
       ctx.restore();
       break;
+
+    // Transformation
+    case "T": {
+      const [, a, b, c, d, e, f] = cmd;
+      ctx.transform(a, b, c, d, e, f);
+      break;
+    }
+
+    // Path commands
+    case "B":
+      ctx.beginPath();
+      break;
+    case "M": {
+      const [, x, y] = cmd;
+      ctx.moveTo(x, y);
+      break;
+    }
+    case "L": {
+      const [, x, y] = cmd;
+      ctx.lineTo(x, y);
+      break;
+    }
+    case "C": {
+      const [, cx1, cy1, cx2, cy2, x, y] = cmd;
+      ctx.bezierCurveTo(cx1, cy1, cx2, cy2, x, y);
+      break;
+    }
+    case "Q": {
+      const [, cx, cy, x, y] = cmd;
+      ctx.quadraticCurveTo(cx, cy, x, y);
+      break;
+    }
+    case "A": {
+      const [, cx, cy, r, startAngle, endAngle] = cmd;
+      ctx.arc(cx, cy, r, startAngle, endAngle);
+      break;
+    }
+    case "Z":
+      ctx.closePath();
+      break;
+
+    // Fill
+    case "F": {
+      const [, r, g, b, a] = cmd;
+      ctx.fillStyle = rgbaToCss(r, g, b, a);
+      ctx.fill();
+      break;
+    }
+
+    // Stroke - adjust line width by inverse of scale to maintain visual width
+    case "K": {
+      const [, r, g, b, a, lineWidth] = cmd;
+      ctx.strokeStyle = rgbaToCss(r, g, b, a);
+      ctx.lineWidth = lineWidth / scale;
+      ctx.stroke();
+      break;
+    }
+
+    // Line style
+    case "LC": {
+      const [, cap] = cmd;
+      ctx.lineCap = lineCapToString(cap);
+      break;
+    }
+    case "LJ": {
+      const [, join] = cmd;
+      ctx.lineJoin = lineJoinToString(join);
+      break;
+    }
+    // Line dash - multiply by scale since dashes are not transformed by ctx.transform
+    case "LD": {
+      const dashes = cmd.slice(1) as number[];
+      ctx.setLineDash(dashes.map(d => d * scale));
+      break;
+    }
+
+    // Text
+    case "FT": {
+      const [, text, x, y] = cmd;
+      ctx.fillText(text, x, y);
+      break;
+    }
+    case "SF": {
+      const [, font] = cmd;
+      ctx.font = font;
+      break;
+    }
+
+    default:
+      console.warn(`Unknown canvas command: ${opcode}`);
   }
 }
 
@@ -133,14 +182,16 @@ export interface RenderOptions {
   backgroundColor?: Color;
   /** Scale factor for high-DPI displays (default: window.devicePixelRatio) */
   pixelRatio?: number;
+  /** Padding factor for fitting diagram (0-1, default: 0.9 = 10% padding) */
+  padding?: number;
 }
 
 /**
- * Render a diagram to an HTML canvas element
+ * Render a canvas diagram (command-based format) to an HTML canvas element
  */
 export function renderDiagram(
   canvas: HTMLCanvasElement,
-  diagram: Diagram,
+  diagram: CanvasDiagram,
   options: RenderOptions = {}
 ): void {
   const ctx = canvas.getContext("2d");
@@ -149,6 +200,7 @@ export function renderDiagram(
   }
 
   const pixelRatio = options.pixelRatio ?? window.devicePixelRatio ?? 1;
+  const padding = options.padding ?? 0.9;
 
   // Set canvas size accounting for pixel ratio
   canvas.width = diagram.width * pixelRatio;
@@ -166,14 +218,22 @@ export function renderDiagram(
 
   // Fill background if specified
   if (options.backgroundColor) {
-    ctx.fillStyle = colorToCss(options.backgroundColor);
+    const { r, g, b, a } = options.backgroundColor;
+    ctx.fillStyle = rgbaToCss(r, g, b, a);
     ctx.fillRect(0, 0, diagram.width, diagram.height);
   }
 
-  // Render all primitives
-  for (const primitive of diagram.primitives) {
-    renderPrimitive(ctx, primitive);
+  // Apply transform to fit diagram to canvas
+  const transform = calculateFitTransform(diagram.width, diagram.height, diagram.bounds, padding);
+  ctx.save();
+  ctx.transform(transform.a, transform.b, transform.c, transform.d, transform.e, transform.f);
+
+  // Execute all commands, passing scale for line width adjustment
+  for (const cmd of diagram.commands) {
+    executeCommand(ctx, cmd, transform.scale);
   }
+
+  ctx.restore();
 }
 
 /**
@@ -183,12 +243,12 @@ export async function fetchAndRenderDiagram(
   canvas: HTMLCanvasElement,
   url: string,
   options: RenderOptions = {}
-): Promise<Diagram> {
+): Promise<CanvasDiagram> {
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Failed to fetch diagram: ${response.status} ${response.statusText}`);
   }
-  const diagram: Diagram = await response.json();
+  const diagram: CanvasDiagram = await response.json();
   renderDiagram(canvas, diagram, options);
   return diagram;
 }

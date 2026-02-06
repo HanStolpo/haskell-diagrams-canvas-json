@@ -1,13 +1,9 @@
 /**
  * Types representing the JSON structure produced by diagrams-canvas-json
- * These will be updated as the Haskell package develops its JSON schema
+ *
+ * The backend produces a command-based format where each command is a compact
+ * JSON array with a string opcode followed by parameters.
  */
-
-/** A 2D point */
-export interface Point {
-  x: number;
-  y: number;
-}
 
 /** RGBA color representation */
 export interface Color {
@@ -17,61 +13,46 @@ export interface Color {
   a: number;
 }
 
-/** Line cap style */
-export type LineCap = "butt" | "round" | "square";
-
-/** Line join style */
-export type LineJoin = "miter" | "round" | "bevel";
-
-/** Stroke style for paths */
-export interface StrokeStyle {
-  color: Color;
-  width: number;
-  lineCap?: LineCap;
-  lineJoin?: LineJoin;
-  dashArray?: number[];
-  dashOffset?: number;
+/** Bounding box of the diagram in diagram coordinates */
+export interface BBox {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
 }
 
-/** Fill style for shapes */
-export interface FillStyle {
-  color: Color;
-}
+/**
+ * Canvas command opcodes produced by the Haskell backend.
+ * Commands are encoded as JSON arrays for compact wire format.
+ */
+export type CanvasCommand =
+  // State management
+  | ["S"]                                              // Save
+  | ["R"]                                              // Restore
+  // Transformation (a, b, c, d, e, f) - standard 2D affine matrix
+  | ["T", number, number, number, number, number, number]
+  // Path commands (all use ABSOLUTE coordinates in diagram space)
+  | ["B"]                                              // BeginPath
+  | ["M", number, number]                              // MoveTo x, y
+  | ["L", number, number]                              // LineTo x, y
+  | ["C", number, number, number, number, number, number] // BezierTo cx1, cy1, cx2, cy2, x, y
+  | ["Q", number, number, number, number]              // QuadTo cx, cy, x, y
+  | ["A", number, number, number, number, number]      // Arc cx, cy, r, startAngle, endAngle
+  | ["Z"]                                              // ClosePath
+  // Style and drawing
+  | ["F", number, number, number, number]              // Fill RGBA (0-255 for RGB, 0-1 for alpha)
+  | ["K", number, number, number, number, number]      // Stroke RGBA + lineWidth
+  | ["LC", number]                                     // SetLineCap: 0=butt, 1=round, 2=square
+  | ["LJ", number]                                     // SetLineJoin: 0=miter, 1=round, 2=bevel
+  | ["LD", ...number[]]                                // SetLineDash: array of dash lengths
+  // Text
+  | ["FT", string, number, number]                     // FillText text, x, y
+  | ["SF", string];                                    // SetFont font
 
-/** Transform matrix (2D affine transformation) */
-export interface Transform {
-  a: number;
-  b: number;
-  c: number;
-  d: number;
-  e: number;
-  f: number;
-}
-
-/** Path segment commands */
-export type PathSegment =
-  | { type: "moveTo"; point: Point }
-  | { type: "lineTo"; point: Point }
-  | { type: "quadraticCurveTo"; control: Point; end: Point }
-  | { type: "bezierCurveTo"; control1: Point; control2: Point; end: Point }
-  | { type: "arcTo"; control1: Point; control2: Point; radius: number }
-  | { type: "arc"; center: Point; radius: number; startAngle: number; endAngle: number; counterclockwise?: boolean }
-  | { type: "closePath" };
-
-/** A path definition */
-export interface Path {
-  segments: PathSegment[];
-}
-
-/** Drawing primitive types */
-export type Primitive =
-  | { type: "path"; path: Path; stroke?: StrokeStyle; fill?: FillStyle }
-  | { type: "text"; text: string; position: Point; font?: string; fill?: FillStyle }
-  | { type: "group"; children: Primitive[]; transform?: Transform };
-
-/** Root diagram structure */
-export interface Diagram {
+/** Root diagram structure from the backend */
+export interface CanvasDiagram {
   width: number;
   height: number;
-  primitives: Primitive[];
+  bounds: BBox;
+  commands: CanvasCommand[];
 }
