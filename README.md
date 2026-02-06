@@ -90,24 +90,24 @@ Examples from the diagrams quickstart guide:
 - `polygon-nodes` - Green circles at hexagon vertices
 - `tournament` - Numbered nodes in pentagon arrangement
 
-## Architecture
+## Dev Setup Architecture
 
 ```
-┌─────────────────────┐     ┌─────────────────────┐
-│   Haskell Server    │     │   Vite Dev Server   │
-│   (port 8080)       │     │   (port 3000)       │
-│                     │     │                     │
-│  ┌───────────────┐  │     │  ┌───────────────┐  │
-│  │ diagrams-svg  │  │     │  │   Frontend    │  │
-│  │ (SVG output)  │──┼─────┼─▶│  (displays    │  │
-│  └───────────────┘  │     │  │   both)       │  │
-│                     │     │  └───────────────┘  │
-│  ┌───────────────┐  │     │                     │
-│  │ diagrams-     │  │     │  ┌───────────────┐  │
-│  │ canvas-json   │  │     │  │ canvas        │  │
-│  │ (JSON output) │──┼─────┼─▶│ renderer      │  │
-│  └───────────────┘  │     │  └───────────────┘  │
-└─────────────────────┘     └─────────────────────┘
++---------------------+     +---------------------+
+|   Haskell Server    |     |   Vite Dev Server   |
+|   (port 8080)       |     |   (port 3000)       |
+|                     |     |                     |
+|  +---------------+  |     |  +---------------+  |
+|  | diagrams-svg  |  |     |  |   Frontend    |  |
+|  | (SVG output)  |--+-----+->|  (displays    |  |
+|  +---------------+  |     |  |   both)       |  |
+|                     |     |  +---------------+  |
+|  +---------------+  |     |                     |
+|  | diagrams-     |  |     |  +---------------+  |
+|  | canvas-json   |  |     |  | canvas        |  |
+|  | (JSON output) |--+-----+->| renderer      |  |
+|  +---------------+  |     |  +---------------+  |
++---------------------+     +---------------------+
 ```
 
 The Vite dev server proxies `/api/*` requests to the Haskell server at `localhost:8080`.
