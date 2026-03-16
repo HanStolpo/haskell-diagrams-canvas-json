@@ -8,18 +8,24 @@ function rgbaToCss(r: number, g: number, b: number, a: number): string {
 /** Convert line cap number to canvas string */
 function lineCapToString(cap: number): CanvasLineCap {
   switch (cap) {
-    case 1: return "round";
-    case 2: return "square";
-    default: return "butt";
+    case 1:
+      return "round";
+    case 2:
+      return "square";
+    default:
+      return "butt";
   }
 }
 
 /** Convert line join number to canvas string */
 function lineJoinToString(join: number): CanvasLineJoin {
   switch (join) {
-    case 1: return "round";
-    case 2: return "bevel";
-    default: return "miter";
+    case 1:
+      return "round";
+    case 2:
+      return "bevel";
+    default:
+      return "miter";
   }
 }
 
@@ -31,15 +37,31 @@ function calculateFitTransform(
   canvasWidth: number,
   canvasHeight: number,
   bounds: BBox,
-  padding: number = 0.9
-): { a: number; b: number; c: number; d: number; e: number; f: number; scale: number } {
+  padding: number = 0.9,
+): {
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+  e: number;
+  f: number;
+  scale: number;
+} {
   const { minX, minY, maxX, maxY } = bounds;
   const diagramWidth = maxX - minX;
   const diagramHeight = maxY - minY;
 
   // Handle empty or zero-size diagrams
   if (diagramWidth <= 0 || diagramHeight <= 0) {
-    return { a: 100, b: 0, c: 0, d: -100, e: canvasWidth / 2, f: canvasHeight / 2, scale: 100 };
+    return {
+      a: 100,
+      b: 0,
+      c: 0,
+      d: -100,
+      e: canvasWidth / 2,
+      f: canvasHeight / 2,
+      scale: 100,
+    };
   }
 
   // Calculate scale to fit with padding (preserving aspect ratio)
@@ -70,7 +92,11 @@ function calculateFitTransform(
  * Execute a single canvas command
  * @param scale - The current transform scale, used to adjust line widths
  */
-function executeCommand(ctx: CanvasRenderingContext2D, cmd: CanvasCommand, scale: number): void {
+function executeCommand(
+  ctx: CanvasRenderingContext2D,
+  cmd: CanvasCommand,
+  scale: number,
+): void {
   const opcode = cmd[0];
 
   switch (opcode) {
@@ -153,7 +179,7 @@ function executeCommand(ctx: CanvasRenderingContext2D, cmd: CanvasCommand, scale
     // Line dash - multiply by scale since dashes are not transformed by ctx.transform
     case "LD": {
       const dashes = cmd.slice(1) as number[];
-      ctx.setLineDash(dashes.map(d => d * scale));
+      ctx.setLineDash(dashes.map((d) => d * scale));
       break;
     }
 
@@ -192,7 +218,7 @@ export interface RenderOptions {
 export function renderDiagram(
   canvas: HTMLCanvasElement,
   diagram: CanvasDiagram,
-  options: RenderOptions = {}
+  options: RenderOptions = {},
 ): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) {
@@ -224,9 +250,21 @@ export function renderDiagram(
   }
 
   // Apply transform to fit diagram to canvas
-  const transform = calculateFitTransform(diagram.width, diagram.height, diagram.bounds, padding);
+  const transform = calculateFitTransform(
+    diagram.width,
+    diagram.height,
+    diagram.bounds,
+    padding,
+  );
   ctx.save();
-  ctx.transform(transform.a, transform.b, transform.c, transform.d, transform.e, transform.f);
+  ctx.transform(
+    transform.a,
+    transform.b,
+    transform.c,
+    transform.d,
+    transform.e,
+    transform.f,
+  );
 
   // Execute all commands, passing scale for line width adjustment
   for (const cmd of diagram.commands) {
@@ -242,11 +280,13 @@ export function renderDiagram(
 export async function fetchAndRenderDiagram(
   canvas: HTMLCanvasElement,
   url: string,
-  options: RenderOptions = {}
+  options: RenderOptions = {},
 ): Promise<CanvasDiagram> {
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`Failed to fetch diagram: ${response.status} ${response.statusText}`);
+    throw new Error(
+      `Failed to fetch diagram: ${response.status} ${response.statusText}`,
+    );
   }
   const diagram: CanvasDiagram = await response.json();
   renderDiagram(canvas, diagram, options);

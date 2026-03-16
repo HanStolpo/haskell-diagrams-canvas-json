@@ -8,7 +8,7 @@ import Data.Aeson qualified as A
 import Data.ByteString.Lazy qualified as BL
 import Data.Map.Strict qualified as Map
 import Data.Text.Lazy qualified as TL
-import Diagrams.Backend.CanvasJson (CanvasJson, CanvasDiagram, canvasJsonOptions, renderCanvasJson)
+import Diagrams.Backend.CanvasJson (CanvasDiagram, CanvasJson, canvasJsonOptions, renderCanvasJson)
 import Diagrams.Backend.SVG (Options (..), SVG (..))
 import Diagrams.Prelude hiding (text)
 import Diagrams.TwoD.Text (Text, text)

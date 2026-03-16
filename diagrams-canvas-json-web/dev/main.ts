@@ -3,7 +3,10 @@ import { fetchAndRenderDiagram } from "../src/lib/index.js";
 const statusEl = document.getElementById("status") as HTMLDivElement;
 const examplesContainer = document.getElementById("examples") as HTMLDivElement;
 
-function setStatus(message: string, type: "info" | "success" | "error" = "info"): void {
+function setStatus(
+  message: string,
+  type: "info" | "success" | "error" = "info",
+): void {
   statusEl.textContent = message;
   statusEl.className = `status ${type}`;
 }
@@ -100,7 +103,10 @@ async function loadExamples(): Promise<void> {
     setStatus(`Loaded ${examples.length} examples successfully!`, "success");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    setStatus(`Error: ${message}. Make sure the Haskell server is running on port 8080.`, "error");
+    setStatus(
+      `Error: ${message}. Make sure the Haskell server is running on port 8080.`,
+      "error",
+    );
 
     // Show fallback message
     examplesContainer.innerHTML = `

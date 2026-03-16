@@ -42,6 +42,7 @@
           package = pkgs.treefmt;
           flakeFormatter = false; # For https://github.com/numtide/treefmt-nix/issues/55
 
+          programs.prettier.enable = true;
           programs.ormolu.enable = true;
           programs.nixpkgs-fmt.enable = true;
           programs.cabal-fmt.enable = true;

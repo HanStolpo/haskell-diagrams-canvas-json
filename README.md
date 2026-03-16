@@ -41,31 +41,31 @@ The canvas backend is functional and renders most diagrams correctly:
    ```
 
    Or Start them manually
+   - **Start the Haskell server** (serves SVG examples on port 8080):
 
-     - **Start the Haskell server** (serves SVG examples on port 8080):
-        ```bash
-        cabal run diagrams-canvas-json
-        ```
+     ```bash
+     cabal run diagrams-canvas-json
+     ```
 
-     - **Start the web dev server** (serves frontend on port 3000):
-        ```bash
-        cd diagrams-canvas-json-web
-        npm install
-        npm run dev
-        ```
+   - **Start the web dev server** (serves frontend on port 3000):
+     ```bash
+     cd diagrams-canvas-json-web
+     npm install
+     npm run dev
+     ```
+
 2. **Open** http://localhost:3000 to see the examples
-
 
 ## API Endpoints
 
 The Haskell server provides:
 
- | Endpoint                      | Description                      |
- |-------------------------------|----------------------------------|
- | `GET /api/examples`           | List all available example names |
- | `GET /api/example/:name/svg`  | Get SVG for a specific example   |
- | `GET /api/example/:name/json` | Get JSON for canvas rendering    |
- | `GET /api/health`             | Health check                     |
+| Endpoint                      | Description                      |
+| ----------------------------- | -------------------------------- |
+| `GET /api/examples`           | List all available example names |
+| `GET /api/example/:name/svg`  | Get SVG for a specific example   |
+| `GET /api/example/:name/json` | Get JSON for canvas rendering    |
+| `GET /api/health`             | Health check                     |
 
 ### Available Examples
 
@@ -122,14 +122,14 @@ The backend outputs a compact command-based JSON format:
   "height": 400,
   "bounds": { "minX": -1, "minY": -1, "maxX": 1, "maxY": 1 },
   "commands": [
-    ["S"],                              // Save
-    ["B"],                              // BeginPath
-    ["M", 1, 0],                        // MoveTo x y
-    ["C", 1, 0.55, 0.55, 1, 0, 1],     // BezierTo cx1 cy1 cx2 cy2 x y
-    ["Z"],                              // ClosePath
-    ["F", 0, 0, 255, 1],               // Fill r g b a (0-255 for RGB, 0-1 for alpha)
-    ["K", 0, 0, 0, 1, 2],              // Stroke r g b a lineWidth
-    ["R"]                               // Restore
+    ["S"], // Save
+    ["B"], // BeginPath
+    ["M", 1, 0], // MoveTo x y
+    ["C", 1, 0.55, 0.55, 1, 0, 1], // BezierTo cx1 cy1 cx2 cy2 x y
+    ["Z"], // ClosePath
+    ["F", 0, 0, 255, 1], // Fill r g b a (0-255 for RGB, 0-1 for alpha)
+    ["K", 0, 0, 0, 1, 2], // Stroke r g b a lineWidth
+    ["R"] // Restore
   ]
 }
 ```

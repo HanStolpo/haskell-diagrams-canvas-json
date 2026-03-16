@@ -28,7 +28,7 @@ library
   -- other-extensions:
   build-depends:
     , aeson
-    , base          ^>=4.20.2.0
+    , base           ^>=4.20.2.0
     , colour
     , containers
     , diagrams-core
