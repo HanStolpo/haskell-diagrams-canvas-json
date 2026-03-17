@@ -19,6 +19,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "build:lib": "tsc",
+    "build:bundle": "vite build --config vite.lib.config.ts",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
   },

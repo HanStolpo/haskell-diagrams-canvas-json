@@ -6,7 +6,6 @@ module Main (main) where
 
 import Data.Aeson qualified as A
 import Data.ByteString.Lazy qualified as BL
-import Data.Map.Strict qualified as Map
 import Data.Text.Lazy qualified as TL
 import Diagrams.Backend.CanvasJson (CanvasDiagram, CanvasJson, canvasJsonOptions, renderCanvasJson)
 import Diagrams.Backend.SVG (Options (..), SVG (..))
@@ -168,7 +167,7 @@ exTranslationEffects = hcat' (with & sep .~ 1) [circleSqT, circleSqHT, circleSqH
 exAlignment :: (PolyDiagram b) => QDiagram b V2 Double Any
 exAlignment = hrule (2 * sum sizes) === circles # centerX
   where
-    circles = hcat . map alignT . zipWith scale sizes $ repeat (circle 1)
+    circles = hcat (map (alignT . (`scale` circle 1)) sizes)
     sizes = [2, 5, 4, 7, 1, 3]
 
 -- Example 16: Regular Polygon (Hexagon)

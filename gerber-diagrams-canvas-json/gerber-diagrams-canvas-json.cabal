@@ -1,0 +1,61 @@
+cabal-version:   3.4
+name:            gerber-diagrams-canvas-json
+version:         0.1.0.0
+synopsis:
+  Visualize gerbers using diagrams-canvas-json and gerber-diagrams packages
+
+license:         MIT
+license-file:    LICENSE
+author:          Handré Stolp
+maintainer:      HanStolpo@gmail.com
+category:        Web
+build-type:      Simple
+extra-doc-files: CHANGELOG.md
+
+common warnings
+  ghc-options: -Wall
+
+library
+  import:           warnings
+  exposed-modules:  Gerber.Diagrams.CanvasJson
+  build-depends:
+    , aeson
+    , base                  ^>=4.20.2.0
+    , containers
+    , diagrams-canvas-json
+    , diagrams-lib
+    , foldl
+    , gerber
+    , gerber-diagrams
+    , text
+
+  hs-source-dirs:   src
+  default-language: GHC2021
+
+executable gerber-diagrams-canvas-json
+  import:           warnings
+  main-is:          Main.hs
+  build-depends:
+    , aeson
+    , base                         ^>=4.20.2.0
+    , bytestring
+    , containers
+    , diagrams-canvas-json
+    , filepath
+    , gerber-diagrams-canvas-json
+    , optparse-applicative
+    , scotty
+    , text
+
+  hs-source-dirs:   exe
+  default-language: GHC2021
+
+test-suite gerber-diagrams-canvas-json-test
+  import:           warnings
+  default-language: GHC2021
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   test
+  main-is:          Main.hs
+  build-depends:
+    , base                         ^>=4.20.2.0
+    , gerber-diagrams-canvas-json

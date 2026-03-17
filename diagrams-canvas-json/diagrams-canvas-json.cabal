@@ -35,6 +35,7 @@ library
     , diagrams-lib
     , linear
     , mtl
+    , scientific
 
   hs-source-dirs:   src
   default-language: GHC2021

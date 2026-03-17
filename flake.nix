@@ -9,6 +9,8 @@
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
     flake-root.url = "github:srid/flake-root";
     just-flake.url = "github:juspay/just-flake";
+    haskell-gerber.url = "github:circuithub/haskell-gerber/9b0c1cb3dc9e90f5af393248ca17038d25b70c42";
+    haskell-gerber.flake = false;
   };
 
   outputs = inputs:
@@ -25,6 +27,10 @@
         # has only one.
         # See https://github.com/srid/haskell-flake/blob/master/example/flake.nix
         haskellProjects.default = {
+          packages = {
+            gerber.source = inputs.haskell-gerber + /gerber;
+            gerber-diagrams.source = inputs.haskell-gerber + /gerber-diagrams;
+          };
 
           devShell = {
             tools = hp: {

@@ -48,6 +48,23 @@
         "type": "github"
       }
     },
+    "haskell-gerber": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1750433993,
+        "narHash": "sha256-I1mWLQ7S1mtqb/jNY4o4WAgaMUkftSWqiysWj5Ov1OE=",
+        "owner": "circuithub",
+        "repo": "haskell-gerber",
+        "rev": "9b0c1cb3dc9e90f5af393248ca17038d25b70c42",
+        "type": "github"
+      },
+      "original": {
+        "owner": "circuithub",
+        "repo": "haskell-gerber",
+        "rev": "9b0c1cb3dc9e90f5af393248ca17038d25b70c42",
+        "type": "github"
+      }
+    },
     "just-flake": {
       "locked": {
         "lastModified": 1713316411,
@@ -99,6 +116,7 @@
         "flake-parts": "flake-parts",
         "flake-root": "flake-root",
         "haskell-flake": "haskell-flake",
+        "haskell-gerber": "haskell-gerber",
         "just-flake": "just-flake",
         "nixpkgs": "nixpkgs",
         "systems": "systems",

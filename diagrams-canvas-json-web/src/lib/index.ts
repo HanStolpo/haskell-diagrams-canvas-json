@@ -5,5 +5,14 @@
  */
 
 export type { CanvasDiagram, CanvasCommand, Color, BBox } from "./types.js";
-export { renderDiagram, fetchAndRenderDiagram } from "./renderer.js";
+export { executeCommands, renderDiagram } from "./renderer.js";
 export type { RenderOptions } from "./renderer.js";
+export { createViewer } from "./viewer.js";
+export type {
+  CommandLayer,
+  CustomLayer,
+  CustomLayerRenderer,
+  LayeredDiagram,
+  Viewer,
+  ViewerOptions,
+} from "./viewer.js";

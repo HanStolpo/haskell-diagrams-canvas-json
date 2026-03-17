@@ -1,5 +1,6 @@
 packages:
   ./diagrams-canvas-json
+  ./gerber-diagrams-canvas-json
 
 -- See: https://cabal.readthedocs.io/en/latest/nix-local-build.html#developing-multiple-packages
 optimization:
@@ -26,3 +27,15 @@ package *
 
 -- Breaks digrams-gi-cairo
 constraints: diagrams-lib < 1.5
+
+source-repository-package
+  type: git
+  location: https://github.com/circuithub/haskell-gerber
+  tag: 9b0c1cb3dc9e90f5af393248ca17038d25b70c42
+  subdir: gerber
+
+source-repository-package
+  type: git
+  location: https://github.com/circuithub/haskell-gerber
+  tag: 9b0c1cb3dc9e90f5af393248ca17038d25b70c42
+  subdir: gerber-diagrams

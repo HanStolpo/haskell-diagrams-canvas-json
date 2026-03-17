@@ -90,7 +90,7 @@ function calculateFitTransform(
 
 /**
  * Execute a single canvas command
- * @param scale - The current transform scale, used to adjust line widths
+ * @param scale - The current transform scale, used for view-relative line widths (KV/KSV commands)
  */
 function executeCommand(
   ctx: CanvasRenderingContext2D,
@@ -156,14 +156,56 @@ function executeCommand(
       break;
     }
 
-    // Stroke - adjust line width by inverse of scale to maintain visual width
+    // Stroke (coordinate-space line width — scales with the diagram)
     case "K": {
+      const [, r, g, b, a, lineWidth] = cmd;
+      ctx.strokeStyle = rgbaToCss(r, g, b, a);
+      ctx.lineWidth = lineWidth;
+      ctx.stroke();
+      break;
+    }
+
+    // Stroke (view-relative line width — constant visual width)
+    case "KV": {
       const [, r, g, b, a, lineWidth] = cmd;
       ctx.strokeStyle = rgbaToCss(r, g, b, a);
       ctx.lineWidth = lineWidth / scale;
       ctx.stroke();
       break;
     }
+
+    // Set fill color (without filling)
+    case "FS": {
+      const [, r, g, b, a] = cmd;
+      ctx.fillStyle = rgbaToCss(r, g, b, a);
+      break;
+    }
+
+    // Set stroke color + line width (coordinate-space, without stroking)
+    case "KS": {
+      const [, r, g, b, a, lineWidth] = cmd;
+      ctx.strokeStyle = rgbaToCss(r, g, b, a);
+      ctx.lineWidth = lineWidth;
+      break;
+    }
+
+    // Set stroke color + line width (view-relative, without stroking)
+    case "KSV": {
+      const [, r, g, b, a, lineWidth] = cmd;
+      ctx.strokeStyle = rgbaToCss(r, g, b, a);
+      ctx.lineWidth = lineWidth / scale;
+      break;
+    }
+
+    // Fill using current fillStyle
+    case "f":
+      ctx.fill();
+      break;
+
+    // Stroke using current strokeStyle/lineWidth
+    case "k":
+      ctx.stroke();
+      break;
 
     // Line style
     case "LC": {
@@ -176,10 +218,16 @@ function executeCommand(
       ctx.lineJoin = lineJoinToString(join);
       break;
     }
-    // Line dash - multiply by scale since dashes are not transformed by ctx.transform
+    // Line dash (coordinate-space, scales with diagram)
     case "LD": {
       const dashes = cmd.slice(1) as number[];
-      ctx.setLineDash(dashes.map((d) => d * scale));
+      ctx.setLineDash(dashes);
+      break;
+    }
+    // Line dash (view-relative, constant visual size)
+    case "LDV": {
+      const dashes = cmd.slice(1) as number[];
+      ctx.setLineDash(dashes.map((d) => d / scale));
       break;
     }
 
@@ -195,8 +243,29 @@ function executeCommand(
       break;
     }
 
+    // Canvas state
+    case "GCO": {
+      const [, operation] = cmd;
+      ctx.globalCompositeOperation = operation as GlobalCompositeOperation;
+      break;
+    }
+
     default:
       console.warn(`Unknown canvas command: ${opcode}`);
+  }
+}
+
+/**
+ * Execute a list of canvas commands
+ * @param scale - The current transform scale, used for view-relative line widths (KV/KSV commands)
+ */
+export function executeCommands(
+  ctx: CanvasRenderingContext2D,
+  commands: CanvasCommand[],
+  scale: number,
+): void {
+  for (const cmd of commands) {
+    executeCommand(ctx, cmd, scale);
   }
 }
 
@@ -266,29 +335,7 @@ export function renderDiagram(
     transform.f,
   );
 
-  // Execute all commands, passing scale for line width adjustment
-  for (const cmd of diagram.commands) {
-    executeCommand(ctx, cmd, transform.scale);
-  }
+  executeCommands(ctx, diagram.commands, transform.scale);
 
   ctx.restore();
-}
-
-/**
- * Fetch a diagram from a URL and render it
- */
-export async function fetchAndRenderDiagram(
-  canvas: HTMLCanvasElement,
-  url: string,
-  options: RenderOptions = {},
-): Promise<CanvasDiagram> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(
-      `Failed to fetch diagram: ${response.status} ${response.statusText}`,
-    );
-  }
-  const diagram: CanvasDiagram = await response.json();
-  renderDiagram(canvas, diagram, options);
-  return diagram;
 }

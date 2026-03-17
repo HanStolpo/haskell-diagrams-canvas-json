@@ -1,0 +1,456 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+module Main (main) where
+
+import Control.Exception (SomeException, try)
+import Data.Aeson qualified as Aeson
+import Data.ByteString.Lazy qualified as BL
+import Data.Map.Strict qualified as Map
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Text.IO qualified as T
+import Diagrams.Backend.CanvasJson (CanvasDiagram)
+import Gerber.Diagrams.CanvasJson (
+    BoardLayerSpec (..),
+    BoardSpec (..),
+    MultiLayerDiagram,
+    buildBoardDiagram,
+    clipToOutline,
+    compositeLayers,
+    defaultRenderOptions,
+    renderGerber,
+    renderGerberOutline,
+    renderGerberRaw,
+ )
+import Options.Applicative
+import System.Environment (lookupEnv)
+import System.Exit (exitFailure)
+import System.FilePath (takeDirectory, (</>))
+import System.IO (hPutStrLn, stderr)
+import Web.Scotty (get, raw, scotty, setHeader)
+
+-- | Name of the bundled JS library file.
+jsBundleFileName :: FilePath
+jsBundleFileName = "diagrams-canvas-json-web.iife.js"
+
+{- | Resolve the path to the JS bundle.
+
+Uses the @DIAGRAMS_CANVAS_JSON_WEB_DIR@ environment variable if set,
+otherwise falls back to the default path relative to the project root.
+-}
+resolveJsBundlePath :: IO FilePath
+resolveJsBundlePath = do
+    mDir <- lookupEnv "DIAGRAMS_CANVAS_JSON_WEB_DIR"
+    pure $ case mDir of
+        Just dir -> dir </> jsBundleFileName
+        Nothing -> "diagrams-canvas-json-web" </> "dist" </> jsBundleFileName
+
+-- | Read the JS bundle, failing with a helpful message if not found.
+readJsBundle :: IO BL.ByteString
+readJsBundle = do
+    path <- resolveJsBundlePath
+    result <- try (BL.readFile path) :: IO (Either SomeException BL.ByteString)
+    case result of
+        Right bs -> pure bs
+        Left _ -> do
+            hPutStrLn stderr $ "Error: Could not read JS bundle at: " <> path
+            hPutStrLn stderr "Set DIAGRAMS_CANVAS_JSON_WEB_DIR to the directory containing the built JS library."
+            hPutStrLn stderr "To build it: cd diagrams-canvas-json-web && npm run build:bundle"
+            exitFailure
+
+-- | CLI commands
+data Command
+    = ToJson !FilePath
+    | View !FilePath !Int
+    | OutlineToJson !FilePath
+    | OutlineView !FilePath !Int
+    | CompositeToJson !FilePath !FilePath !Bool
+    | CompositeView !FilePath !FilePath !Bool !Int
+    | ClipToJson !FilePath !FilePath
+    | ClipView !FilePath !FilePath !Int
+    | BoardToJson !FilePath
+    | BoardView !FilePath !Int
+
+commandParser :: ParserInfo Command
+commandParser =
+    info
+        (commands <**> helper)
+        ( fullDesc
+            <> progDesc "Convert and view gerber files using diagrams-canvas-json"
+        )
+  where
+    commands =
+        subparser
+            ( command "to-json" (info toJsonCmd (progDesc "Convert a gerber file to canvas JSON on stdout"))
+                <> command "view" (info viewCmd (progDesc "View a gerber file in the browser via a local HTTP server"))
+                <> command "outline-to-json" (info outlineToJsonCmd (progDesc "Convert an outline gerber to a filled shape as canvas JSON"))
+                <> command "outline-view" (info outlineViewCmd (progDesc "View an outline gerber as a filled shape in the browser"))
+                <> command "composite-to-json" (info compositeToJsonCmd (progDesc "Composite base layer with inverted overlay to canvas JSON on stdout"))
+                <> command "composite-view" (info compositeViewCmd (progDesc "View base layer with inverted overlay in the browser"))
+                <> command "clip-to-json" (info clipToJsonCmd (progDesc "Clip a gerber layer to an outline shape as canvas JSON"))
+                <> command "clip-view" (info clipViewCmd (progDesc "View a gerber layer clipped to an outline shape in the browser"))
+                <> command "board-to-json" (info boardToJsonCmd (progDesc "Render board view from gerber layers to JSON on stdout"))
+                <> command "board-view" (info boardViewCmd (progDesc "View board rendering from gerber layers in the browser"))
+            )
+
+    toJsonCmd =
+        ToJson
+            <$> argument str (metavar "GERBER_FILE" <> help "Path to gerber file")
+
+    viewCmd =
+        View
+            <$> argument str (metavar "GERBER_FILE" <> help "Path to gerber file")
+            <*> portOpt
+
+    outlineToJsonCmd =
+        OutlineToJson
+            <$> argument str (metavar "GERBER_FILE" <> help "Path to outline gerber file")
+
+    outlineViewCmd =
+        OutlineView
+            <$> argument str (metavar "GERBER_FILE" <> help "Path to outline gerber file")
+            <*> portOpt
+
+    compositeToJsonCmd =
+        CompositeToJson
+            <$> argument str (metavar "BASE" <> help "Base gerber layer")
+            <*> argument str (metavar "OVERLAY" <> help "Overlay gerber layer (will be inverted)")
+            <*> outlineFlag
+
+    compositeViewCmd =
+        CompositeView
+            <$> argument str (metavar "BASE" <> help "Base gerber layer")
+            <*> argument str (metavar "OVERLAY" <> help "Overlay gerber layer (will be inverted)")
+            <*> outlineFlag
+            <*> portOpt
+
+    clipToJsonCmd =
+        ClipToJson
+            <$> argument str (metavar "CONTENT" <> help "Gerber layer to clip")
+            <*> argument str (metavar "OUTLINE" <> help "Outline gerber (defines visible area)")
+
+    clipViewCmd =
+        ClipView
+            <$> argument str (metavar "CONTENT" <> help "Gerber layer to clip")
+            <*> argument str (metavar "OUTLINE" <> help "Outline gerber (defines visible area)")
+            <*> portOpt
+
+    boardToJsonCmd =
+        BoardToJson
+            <$> argument str (metavar "SPEC_FILE" <> help "Path to JSON board spec file")
+
+    boardViewCmd =
+        BoardView
+            <$> argument str (metavar "SPEC_FILE" <> help "Path to JSON board spec file")
+            <*> portOpt
+
+    portOpt = option auto (long "port" <> short 'p' <> value 3000 <> metavar "PORT" <> help "Port to serve on (default: 3000)")
+    outlineFlag = switch (long "outline" <> help "Treat base layer as an outline (fill the path instead of stroking)")
+
+main :: IO ()
+main = do
+    cmd <- execParser commandParser
+    case cmd of
+        ToJson filePath -> runToJson filePath
+        View filePath port -> runView filePath port
+        OutlineToJson filePath -> runOutlineToJson filePath
+        OutlineView filePath port -> runOutlineView filePath port
+        CompositeToJson basePath overlayPath outline -> runCompositeToJson basePath overlayPath outline
+        CompositeView basePath overlayPath outline port -> runCompositeView basePath overlayPath outline port
+        ClipToJson contentPath outlinePath -> runClipToJson contentPath outlinePath
+        ClipView contentPath outlinePath port -> runClipView contentPath outlinePath port
+        BoardToJson specPath -> runBoardToJson specPath
+        BoardView specPath port -> runBoardView specPath port
+
+runToJson :: FilePath -> IO ()
+runToJson filePath = do
+    src <- T.readFile filePath
+    case renderGerber defaultRenderOptions src of
+        Left err -> do
+            hPutStrLn stderr $ "Error: " <> err
+            exitFailure
+        Right diagram ->
+            BL.putStr (Aeson.encode diagram <> "\n")
+
+runView :: FilePath -> Int -> IO ()
+runView filePath port = do
+    src <- T.readFile filePath
+    case renderGerber defaultRenderOptions src of
+        Left err -> do
+            hPutStrLn stderr $ "Error: " <> err
+            exitFailure
+        Right diagram ->
+            serveViewer (T.pack filePath) diagram port
+
+-- | Black fill colour for outlines
+outlineColour :: (Double, Double, Double, Double)
+outlineColour = (0, 0, 0, 1)
+
+runOutlineToJson :: FilePath -> IO ()
+runOutlineToJson filePath = do
+    src <- T.readFile filePath
+    case renderGerberOutline defaultRenderOptions outlineColour src of
+        Left err -> do
+            hPutStrLn stderr $ "Error: " <> err
+            exitFailure
+        Right diagram ->
+            BL.putStr (Aeson.encode diagram <> "\n")
+
+runOutlineView :: FilePath -> Int -> IO ()
+runOutlineView filePath port = do
+    src <- T.readFile filePath
+    case renderGerberOutline defaultRenderOptions outlineColour src of
+        Left err -> do
+            hPutStrLn stderr $ "Error: " <> err
+            exitFailure
+        Right diagram ->
+            serveViewer (T.pack filePath <> " (outline)") diagram port
+
+runCompositeToJson :: FilePath -> FilePath -> Bool -> IO ()
+runCompositeToJson basePath overlayPath outline = do
+    baseSrc <- T.readFile basePath
+    overlaySrc <- T.readFile overlayPath
+    case compositeGerbers outline baseSrc overlaySrc of
+        Left err -> do
+            hPutStrLn stderr $ "Error: " <> err
+            exitFailure
+        Right diagram ->
+            BL.putStr (Aeson.encode diagram <> "\n")
+
+runCompositeView :: FilePath -> FilePath -> Bool -> Int -> IO ()
+runCompositeView basePath overlayPath outline port = do
+    baseSrc <- T.readFile basePath
+    overlaySrc <- T.readFile overlayPath
+    case compositeGerbers outline baseSrc overlaySrc of
+        Left err -> do
+            hPutStrLn stderr $ "Error: " <> err
+            exitFailure
+        Right diagram -> do
+            let name = T.pack basePath <> " + inverted " <> T.pack overlayPath
+            putStrLn $ "  Base: " <> basePath <> (if outline then " (outline)" else "")
+            putStrLn $ "  Overlay (inverted): " <> overlayPath
+            serveViewer name diagram port
+
+compositeGerbers :: Bool -> T.Text -> T.Text -> Either String CanvasDiagram
+compositeGerbers outline baseSrc overlaySrc = do
+    base <-
+        if outline
+            then renderGerberOutline defaultRenderOptions outlineColour baseSrc
+            else renderGerberRaw defaultRenderOptions baseSrc
+    overlay <- renderGerberRaw defaultRenderOptions overlaySrc
+    Right $ compositeLayers base overlay
+
+runClipToJson :: FilePath -> FilePath -> IO ()
+runClipToJson contentPath outlinePath = do
+    contentSrc <- T.readFile contentPath
+    outlineSrc <- T.readFile outlinePath
+    case clipGerbers contentSrc outlineSrc of
+        Left err -> do
+            hPutStrLn stderr $ "Error: " <> err
+            exitFailure
+        Right diagram ->
+            BL.putStr (Aeson.encode diagram <> "\n")
+
+runClipView :: FilePath -> FilePath -> Int -> IO ()
+runClipView contentPath outlinePath port = do
+    contentSrc <- T.readFile contentPath
+    outlineSrc <- T.readFile outlinePath
+    case clipGerbers contentSrc outlineSrc of
+        Left err -> do
+            hPutStrLn stderr $ "Error: " <> err
+            exitFailure
+        Right diagram -> do
+            let name = T.pack contentPath <> " clipped to " <> T.pack outlinePath
+            putStrLn $ "  Content: " <> contentPath
+            putStrLn $ "  Outline: " <> outlinePath
+            serveViewer name diagram port
+
+clipGerbers :: T.Text -> T.Text -> Either String CanvasDiagram
+clipGerbers contentSrc outlineSrc = do
+    content <- renderGerberRaw defaultRenderOptions contentSrc
+    outline <- renderGerberRaw defaultRenderOptions outlineSrc
+    Right $ clipToOutline content outline
+
+serveViewer :: T.Text -> CanvasDiagram -> Int -> IO ()
+serveViewer name diagram port = do
+    let jsonBytes = Aeson.encode diagram
+    jsBundle <- readJsBundle
+    putStrLn $ "Serving gerber viewer at http://localhost:" <> show port
+    scotty port $ do
+        get "/" $ do
+            setHeader "Content-Type" "text/html; charset=utf-8"
+            raw . BL.fromStrict . TE.encodeUtf8 $ viewerHtml name
+
+        get "/api/gerber/json" $ do
+            setHeader "Content-Type" "application/json"
+            raw jsonBytes
+
+        get "/lib/diagrams-canvas-json-web.js" $ do
+            setHeader "Content-Type" "application/javascript"
+            raw jsBundle
+
+viewerHtml :: T.Text -> T.Text
+viewerHtml name =
+    T.unlines
+        [ "<!DOCTYPE html>"
+        , "<html><head>"
+        , "<meta charset=\"utf-8\">"
+        , "<title>Gerber Viewer - " <> escapeHtml name <> "</title>"
+        , "<style>"
+        , viewerCss
+        , "</style>"
+        , "</head><body>"
+        , "<h1>" <> escapeHtml name <> "</h1>"
+        , "<div id=\"wrap\"></div>"
+        , "<div id=\"error\"></div>"
+        , "<script src=\"/lib/diagrams-canvas-json-web.js\"></script>"
+        , "<script>"
+        , "async function main() {"
+        , "  const resp = await fetch('/api/gerber/json');"
+        , "  if (!resp.ok) throw new Error('HTTP ' + resp.status);"
+        , "  const diagram = await resp.json();"
+        , "  DiagramsCanvasJson.createViewer({"
+        , "    container: document.getElementById('wrap'),"
+        , "    bounds: diagram.bounds,"
+        , "    commandLayers: [{ color: [0,0,0,1], commands: diagram.commands }],"
+        , "  });"
+        , "}"
+        , "main().catch(e => {"
+        , "  document.getElementById('error').textContent = 'Error: ' + e.message;"
+        , "});"
+        , "</script>"
+        , "</body></html>"
+        ]
+
+-- | Shared CSS for all viewer pages.
+viewerCss :: T.Text
+viewerCss =
+    T.unlines
+        [ "* { margin: 0; padding: 0; box-sizing: border-box; }"
+        , "html, body { height: 100%; overflow: hidden; background: #fff;"
+        , "  font-family: system-ui, sans-serif; color: #333; }"
+        , "body { display: flex; flex-direction: column; }"
+        , "h1 { font-size: 1rem; padding: 0.4rem 0.8rem; background: #f5f5f5;"
+        , "  border-bottom: 1px solid #ddd; flex-shrink: 0; }"
+        , "#wrap { flex: 1; position: relative; overflow: hidden; }"
+        , "#error { color: #cc0000; position: absolute; top: 50%; left: 50%;"
+        , "  transform: translate(-50%, -50%); }"
+        ]
+
+escapeHtml :: T.Text -> T.Text
+escapeHtml = T.replace "&" "&amp;" . T.replace "<" "&lt;" . T.replace ">" "&gt;" . T.replace "\"" "&quot;"
+
+--------------------------------------------------------------------------------
+-- Board rendering
+--------------------------------------------------------------------------------
+
+runBoardToJson :: FilePath -> IO ()
+runBoardToJson specPath = do
+    result <- loadBoard specPath
+    case result of
+        Left err -> do
+            hPutStrLn stderr $ "Error: " <> err
+            exitFailure
+        Right mld ->
+            BL.putStr (Aeson.encode mld <> "\n")
+
+runBoardView :: FilePath -> Int -> IO ()
+runBoardView specPath port = do
+    result <- loadBoard specPath
+    case result of
+        Left err -> do
+            hPutStrLn stderr $ "Error: " <> err
+            exitFailure
+        Right mld ->
+            serveBoardViewer (T.pack specPath) mld port
+
+{- | Load a board spec, read all referenced gerber files, and build
+the board diagram.
+-}
+loadBoard :: FilePath -> IO (Either String MultiLayerDiagram)
+loadBoard specPath = do
+    specBytes <- BL.readFile specPath
+    case Aeson.eitherDecode specBytes of
+        Left err -> return (Left $ "Spec parse error: " <> err)
+        Right spec -> do
+            let specDir = takeDirectory specPath
+                -- Collect all unique file paths
+                allPaths =
+                    bsOutline spec
+                        : bsThroughLayers spec
+                        ++ map blsBase (bsLayers spec)
+                uniquePaths = Map.fromList [(p, specDir </> p) | p <- allPaths]
+            -- Render all gerber files
+            rendered <- mapM renderFile (Map.toList uniquePaths)
+            case sequence rendered of
+                Left err -> return (Left err)
+                Right pairs -> do
+                    let fileMap = Map.fromList pairs
+                        lookupFile p = case Map.lookup p fileMap of
+                            Just d -> d
+                            Nothing -> error $ "impossible: missing " <> p
+                        outlineDiagram = lookupFile (bsOutline spec)
+                        throughDiagrams = map lookupFile (bsThroughLayers spec)
+                        entries = [(l, lookupFile (blsBase l)) | l <- bsLayers spec]
+                    return (Right (buildBoardDiagram outlineDiagram throughDiagrams (bsPrepegColor spec) (bsBaseColor spec) entries))
+  where
+    renderFile :: (FilePath, FilePath) -> IO (Either String (FilePath, CanvasDiagram))
+    renderFile (key, absPath) = do
+        result <- try (T.readFile absPath) :: IO (Either SomeException T.Text)
+        case result of
+            Left exc -> return (Left $ "Failed to read " <> absPath <> ": " <> show exc)
+            Right src ->
+                case renderGerberRaw defaultRenderOptions src of
+                    Left err -> return (Left $ "Failed to parse " <> absPath <> ": " <> err)
+                    Right diagram -> return (Right (key, diagram))
+
+serveBoardViewer :: T.Text -> MultiLayerDiagram -> Int -> IO ()
+serveBoardViewer name mld port = do
+    let jsonBytes = Aeson.encode mld
+    jsBundle <- readJsBundle
+    putStrLn $ "Serving board viewer at http://localhost:" <> show port
+    scotty port $ do
+        get "/" $ do
+            setHeader "Content-Type" "text/html; charset=utf-8"
+            raw . BL.fromStrict . TE.encodeUtf8 $ boardViewerHtml name
+
+        get "/api/gerber/json" $ do
+            setHeader "Content-Type" "application/json"
+            raw jsonBytes
+
+        get "/lib/diagrams-canvas-json-web.js" $ do
+            setHeader "Content-Type" "application/javascript"
+            raw jsBundle
+
+boardViewerHtml :: T.Text -> T.Text
+boardViewerHtml name =
+    T.unlines
+        [ "<!DOCTYPE html>"
+        , "<html><head>"
+        , "<meta charset=\"utf-8\">"
+        , "<title>Board Viewer - " <> escapeHtml name <> "</title>"
+        , "<style>"
+        , viewerCss
+        , "</style>"
+        , "</head><body>"
+        , "<h1>" <> escapeHtml name <> "</h1>"
+        , "<div id=\"wrap\"></div>"
+        , "<div id=\"error\"></div>"
+        , "<script src=\"/lib/diagrams-canvas-json-web.js\"></script>"
+        , "<script>"
+        , "async function main() {"
+        , "  const resp = await fetch('/api/gerber/json');"
+        , "  if (!resp.ok) throw new Error('HTTP ' + resp.status);"
+        , "  const diagram = await resp.json();"
+        , "  DiagramsCanvasJson.createViewer({"
+        , "    container: document.getElementById('wrap'),"
+        , "    bounds: diagram.bounds,"
+        , "    commandLayers: diagram.layers,"
+        , "  });"
+        , "}"
+        , "main().catch(e => {"
+        , "  document.getElementById('error').textContent = 'Error: ' + e.message;"
+        , "});"
+        , "</script>"
+        , "</body></html>"
+        ]

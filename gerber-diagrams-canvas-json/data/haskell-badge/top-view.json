@@ -1,0 +1,21 @@
+{
+  "outline": "gerber/outline.pho",
+  "throughLayers": ["gerber/drill.pho"],
+  "layers": [
+    {
+      "color": [184, 115, 51, 1.0],
+      "base": "gerber/copper-top.pho",
+      "outlineMode": "clip"
+    },
+    {
+      "color": [0, 0, 0, 1.0],
+      "base": "gerber/solder-mask-top.pho",
+      "outlineMode": "fill"
+    },
+    {
+      "color": [255, 255, 255, 1.0],
+      "base": "gerber/silkscreen-top.pho",
+      "outlineMode": "clip"
+    }
+  ]
+}

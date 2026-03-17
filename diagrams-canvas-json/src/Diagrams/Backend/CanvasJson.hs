@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -18,24 +19,88 @@ module Diagrams.Backend.CanvasJson (
     CanvasJsonOptions (..),
     canvasJsonOptions,
 
+    -- * JSON precision
+    JsonPrecision (..),
+    defaultJsonPrecision,
+    roundN,
+    encodeCmd,
+    encodeBBox,
+
     -- * Canvas commands
     CanvasCmd (..),
     CanvasDiagram (..),
+    BBox (..),
+
+    -- * Optimization
+    optimizeCommands,
 ) where
 
+import Control.Monad (when)
 import Control.Monad.State.Strict
 import Data.Aeson (ToJSON (..))
 import Data.Aeson qualified as A
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isNothing)
+import Data.Scientific (scientific)
 import Data.Tree (Tree (..))
 import Data.Typeable (Typeable)
-import Diagrams.Core.Compile (RNode (..), RTree, toRTree)
+import Diagrams.Core.Compile (RNode (..), RTree, fromDTree, toDTree)
+import Diagrams.Core.Style (unmeasureAttrs)
 import Diagrams.Core.Transform (matrixHomRep)
-import Diagrams.Core.Types (Annotation (..))
+import Diagrams.Core.Types (Annotation (..), DNode (..))
 import Diagrams.Prelude hiding ((<>))
-import Diagrams.TwoD.Attributes (FillTexture (..), LineTexture (..), Texture (..), getFillTexture, getLineTexture)
-import Diagrams.TwoD.Text (Text (..), TextAlignment (..))
+import Diagrams.TwoD.Attributes (FillTexture (..), LineTexture (..))
+import Diagrams.TwoD.Text (Text (..))
 import GHC.Generics (Generic)
+
+--------------------------------------------------------------------------------
+-- JSON Precision
+--------------------------------------------------------------------------------
+
+{- | Controls the number of decimal places used for each category of floating
+point value when serializing to JSON. This avoids emitting full IEEE 754
+double precision (15-17 digits) when the source data has far less precision.
+-}
+data JsonPrecision = JsonPrecision
+    { jpCoordinates :: !Int
+    -- ^ Path coordinates: MoveTo, LineTo, BezierTo, QuadTo, Arc center/radius (default: 4)
+    , jpAlpha :: !Int
+    -- ^ Alpha component 0-1 (default: 2)
+    , jpTransform :: !Int
+    -- ^ Transformation matrix components (default: 8)
+    , jpDimensions :: !Int
+    -- ^ Canvas width, height, bounding box (default: 4)
+    , jpLineWidth :: !Int
+    -- ^ Stroke line width (default: 4)
+    , jpDash :: !Int
+    -- ^ Line dash pattern values (default: 4)
+    , jpAngles :: !Int
+    -- ^ Arc start\/end angles in radians (default: 4)
+    }
+    deriving (Show, Eq)
+
+{- | Sensible defaults: coordinates 2dp, colors integer, alpha 2dp,
+transforms 6dp, dimensions 2dp, line width 2dp, dash 2dp, angles 4dp.
+-}
+defaultJsonPrecision :: JsonPrecision
+defaultJsonPrecision =
+    JsonPrecision
+        { jpCoordinates = 4
+        , jpAlpha = 2
+        , jpTransform = 8
+        , jpDimensions = 4
+        , jpLineWidth = 4
+        , jpDash = 4
+        , jpAngles = 4
+        }
+
+{- | Round a 'Double' to @n@ decimal places and encode as a JSON 'A.Number'
+using 'Data.Scientific.Scientific' to avoid IEEE 754 representation artifacts.
+-}
+roundN :: Int -> Double -> A.Value
+roundN dp x = A.Number $ scientific sig (negate dp)
+  where
+    factor = (10 :: Integer) ^ dp
+    sig = round (x * fromIntegral factor)
 
 --------------------------------------------------------------------------------
 -- Canvas Commands
@@ -59,39 +124,65 @@ data CanvasCmd
     | CmdArc !Double !Double !Double !Double !Double
     | CmdClosePath
     | -- Style and drawing
-      CmdFill !Double !Double !Double !Double -- RGBA
-    | CmdStroke !Double !Double !Double !Double !Double -- RGBA + lineWidth
+      CmdFill !Double !Double !Double !Double -- RGBA (sets fillStyle and fills)
+    | CmdStroke !Double !Double !Double !Double !Double -- RGBA + lineWidth in diagram coords (sets strokeStyle/lineWidth and strokes)
+    | CmdStrokeView !Double !Double !Double !Double !Double -- RGBA + lineWidth relative to view/output (divided by scale on render)
+    | CmdSetFillColor !Double !Double !Double !Double -- Set fillStyle only
+    | CmdSetStrokeColor !Double !Double !Double !Double !Double -- Set strokeStyle + lineWidth in diagram coords only
+    | CmdSetStrokeColorView !Double !Double !Double !Double !Double -- Set strokeStyle + lineWidth relative to view/output only
+    | CmdFillCurrent -- Fill using current fillStyle
+    | CmdStrokeCurrent -- Stroke using current strokeStyle/lineWidth
     | CmdSetLineCap !Int -- 0=butt, 1=round, 2=square
     | CmdSetLineJoin !Int -- 0=miter, 1=round, 2=bevel
     | CmdSetLineDash ![Double]
+    | CmdSetLineDashView ![Double] -- Line dash relative to view (divided by scale on render)
     | -- Text
       CmdFillText !String !Double !Double
     | CmdSetFont !String
+    | -- Canvas state
+      CmdSetGlobalCompositeOperation !String -- e.g. "source-over", "destination-out"
     deriving (Show, Eq, Generic)
 
--- | Encode commands as compact JSON arrays for minimal payload size
+-- | Encode a command as a compact JSON array using the given precision settings.
+encodeCmd :: JsonPrecision -> CanvasCmd -> A.Value
+encodeCmd jp cmd = case cmd of
+    CmdSave -> A.toJSON [A.String "S"]
+    CmdRestore -> A.toJSON [A.String "R"]
+    CmdTransform a b c d e f -> A.toJSON [A.String "T", t a, t b, t c, t d, t e, t f]
+    CmdBeginPath -> A.toJSON [A.String "B"]
+    CmdMoveTo x y -> A.toJSON [A.String "M", co x, co y]
+    CmdLineTo x y -> A.toJSON [A.String "L", co x, co y]
+    CmdBezierTo x1 y1 x2 y2 x y -> A.toJSON [A.String "C", co x1, co y1, co x2, co y2, co x, co y]
+    CmdQuadTo x1 y1 x y -> A.toJSON [A.String "Q", co x1, co y1, co x, co y]
+    CmdArc cx cy r startA endA -> A.toJSON [A.String "A", co cx, co cy, co r, ang startA, ang endA]
+    CmdClosePath -> A.toJSON [A.String "Z"]
+    CmdFill r g b a -> A.toJSON [A.String "F", col r, col g, col b, al a]
+    CmdStroke r g b a lineW -> A.toJSON [A.String "K", col r, col g, col b, al a, lw' lineW]
+    CmdStrokeView r g b a lineW -> A.toJSON [A.String "KV", col r, col g, col b, al a, lw' lineW]
+    CmdSetFillColor r g b a -> A.toJSON [A.String "FS", col r, col g, col b, al a]
+    CmdSetStrokeColor r g b a lineW -> A.toJSON [A.String "KS", col r, col g, col b, al a, lw' lineW]
+    CmdSetStrokeColorView r g b a lineW -> A.toJSON [A.String "KSV", col r, col g, col b, al a, lw' lineW]
+    CmdFillCurrent -> A.toJSON [A.String "f"]
+    CmdStrokeCurrent -> A.toJSON [A.String "k"]
+    CmdSetLineCap c -> A.toJSON [A.String "LC", A.toJSON c]
+    CmdSetLineJoin j -> A.toJSON [A.String "LJ", A.toJSON j]
+    CmdSetLineDash ds -> A.toJSON (A.String "LD" : map da ds)
+    CmdSetLineDashView ds -> A.toJSON (A.String "LDV" : map da ds)
+    CmdFillText txt x y -> A.toJSON [A.String "FT", A.toJSON txt, co x, co y]
+    CmdSetFont f -> A.toJSON [A.String "SF", A.toJSON f]
+    CmdSetGlobalCompositeOperation gco -> A.toJSON [A.String "GCO", A.toJSON gco]
+  where
+    co = roundN (jpCoordinates jp)
+    col = roundN 0
+    al = roundN (jpAlpha jp)
+    t = roundN (jpTransform jp)
+    lw' = roundN (jpLineWidth jp)
+    da = roundN (jpDash jp)
+    ang = roundN (jpAngles jp)
+
+-- | Encode commands using 'defaultJsonPrecision'.
 instance ToJSON CanvasCmd where
-    toJSON cmd = case cmd of
-        CmdSave -> A.toJSON [A.String "S"]
-        CmdRestore -> A.toJSON [A.String "R"]
-        CmdTransform a b c d e f -> A.toJSON [A.String "T", n a, n b, n c, n d, n e, n f]
-        CmdBeginPath -> A.toJSON [A.String "B"]
-        CmdMoveTo x y -> A.toJSON [A.String "M", n x, n y]
-        CmdLineTo x y -> A.toJSON [A.String "L", n x, n y]
-        CmdBezierTo x1 y1 x2 y2 x y -> A.toJSON [A.String "C", n x1, n y1, n x2, n y2, n x, n y]
-        CmdQuadTo x1 y1 x y -> A.toJSON [A.String "Q", n x1, n y1, n x, n y]
-        CmdArc cx cy r startA endA -> A.toJSON [A.String "A", n cx, n cy, n r, n startA, n endA]
-        CmdClosePath -> A.toJSON [A.String "Z"]
-        CmdFill r g b a -> A.toJSON [A.String "F", n r, n g, n b, n a]
-        CmdStroke r g b a lineW -> A.toJSON [A.String "K", n r, n g, n b, n a, n lineW]
-        CmdSetLineCap c -> A.toJSON [A.String "LC", A.toJSON c]
-        CmdSetLineJoin j -> A.toJSON [A.String "LJ", A.toJSON j]
-        CmdSetLineDash ds -> A.toJSON (A.String "LD" : map n ds)
-        CmdFillText t x y -> A.toJSON [A.String "FT", A.toJSON t, n x, n y]
-        CmdSetFont f -> A.toJSON [A.String "SF", A.toJSON f]
-      where
-        n :: Double -> A.Value
-        n = A.toJSON
+    toJSON = encodeCmd defaultJsonPrecision
 
 -- | Bounding box for the diagram
 data BBox = BBox
@@ -102,14 +193,21 @@ data BBox = BBox
     }
     deriving (Show, Eq, Generic)
 
+-- | Encode a bounding box using the given precision for dimensions.
+encodeBBox :: JsonPrecision -> BBox -> A.Value
+encodeBBox jp bb =
+    A.object
+        [ "minX" A..= dim (bbMinX bb)
+        , "minY" A..= dim (bbMinY bb)
+        , "maxX" A..= dim (bbMaxX bb)
+        , "maxY" A..= dim (bbMaxY bb)
+        ]
+  where
+    dim = roundN (jpDimensions jp)
+
+-- | Encode using 'defaultJsonPrecision'.
 instance ToJSON BBox where
-    toJSON bb =
-        A.object
-            [ "minX" A..= bbMinX bb
-            , "minY" A..= bbMinY bb
-            , "maxX" A..= bbMaxX bb
-            , "maxY" A..= bbMaxY bb
-            ]
+    toJSON = encodeBBox defaultJsonPrecision
 
 -- | A complete canvas diagram with dimensions and commands
 data CanvasDiagram = CanvasDiagram
@@ -117,17 +215,20 @@ data CanvasDiagram = CanvasDiagram
     , cdHeight :: !Double
     , cdBounds :: !BBox
     , cdCommands :: ![CanvasCmd]
+    , cdPrecision :: !JsonPrecision
     }
-    deriving (Show, Eq, Generic)
+    deriving (Show, Eq)
 
+-- | Encode using the precision stored in the diagram.
 instance ToJSON CanvasDiagram where
     toJSON cd =
-        A.object
-            [ "width" A..= cdWidth cd
-            , "height" A..= cdHeight cd
-            , "bounds" A..= cdBounds cd
-            , "commands" A..= cdCommands cd
-            ]
+        let jp = cdPrecision cd
+         in A.object
+                [ "width" A..= roundN (jpDimensions jp) (cdWidth cd)
+                , "height" A..= roundN (jpDimensions jp) (cdHeight cd)
+                , "bounds" A..= encodeBBox jp (cdBounds cd)
+                , "commands" A..= map (encodeCmd jp) (cdCommands cd)
+                ]
 
 --------------------------------------------------------------------------------
 -- Backend Definition
@@ -143,11 +244,12 @@ type B = CanvasJson
 -- | Backend options
 data CanvasJsonOptions = CanvasJsonOptions
     { _canvasJsonSize :: SizeSpec V2 Double
+    , _canvasJsonPrecision :: JsonPrecision
     }
 
--- | Default options with specified size
+-- | Default options with specified size and 'defaultJsonPrecision'.
 canvasJsonOptions :: SizeSpec V2 Double -> CanvasJsonOptions
-canvasJsonOptions = CanvasJsonOptions
+canvasJsonOptions sz = CanvasJsonOptions sz defaultJsonPrecision
 
 type instance V CanvasJson = V2
 type instance N CanvasJson = Double
@@ -156,10 +258,16 @@ type instance N CanvasJson = Double
 -- Render Monad
 --------------------------------------------------------------------------------
 
+-- | Whether the current line width is in diagram coordinates or view-relative.
+data LineWidthMode = LWCoord | LWView
+    deriving (Show, Eq)
+
 -- | Render state accumulating commands
 data RenderState = RenderState
     { _rsCommands :: ![CanvasCmd] -- Commands in reverse order
-    , _rsStyle :: !(Style V2 Double) -- Current accumulated style
+    , _rsStyle :: !(Style V2 Double) -- Current accumulated style (measures resolved)
+    , _rsLineWidthMode :: !LineWidthMode -- Whether current line width is coordinate or view-relative
+    , _rsDashMode :: !LineWidthMode -- Whether current dashing is coordinate or view-relative
     , _rsPos :: !(P2 Double) -- Current path position for offset conversion
     }
 
@@ -180,7 +288,7 @@ getPos = gets _rsPos
 
 -- | Run render monad and extract commands
 runRenderM :: RenderM () -> [CanvasCmd]
-runRenderM m = reverse $ _rsCommands $ execState m (RenderState [] mempty origin)
+runRenderM m = reverse $ _rsCommands $ execState m (RenderState [] mempty LWView LWView origin)
 
 --------------------------------------------------------------------------------
 -- Backend Instance
@@ -192,15 +300,13 @@ instance Backend CanvasJson V2 Double where
     type Result CanvasJson V2 Double = [CanvasCmd]
 
     data Options CanvasJson V2 Double = CanvasJsonOpts
-        { _cjSize :: SizeSpec V2 Double
-        }
 
-    renderRTree _ _ rt = runRenderM (renderRTree' rt)
+    renderRTree _ _ rt = runRenderM (renderRTree' 1 1 rt)
 
-    adjustDia _ opts d = (opts, mempty, d)
+    adjustDia _ CanvasJsonOpts d = (CanvasJsonOpts, mempty, d)
 
 instance Semigroup (Render CanvasJson V2 Double) where
-    R r1 <> R r2 = R (r1 >> r2)
+    R ra <> R rb = R (ra >> rb)
 
 instance Monoid (Render CanvasJson V2 Double) where
     mempty = R (return ())
@@ -209,24 +315,57 @@ instance Monoid (Render CanvasJson V2 Double) where
 -- RTree Rendering
 --------------------------------------------------------------------------------
 
--- | Render an RTree to canvas commands
-renderRTree' :: RTree CanvasJson V2 Double Annotation -> RenderM ()
-renderRTree' (Node (RPrim p) _) = unR $ render CanvasJson p
-renderRTree' (Node (RStyle sty) children) = do
+{- | Render an RTree to canvas commands.
+Styles in the tree may contain unresolved measures; we resolve them
+here while classifying line width measures as local vs view-relative.
+-}
+renderRTree' ::
+    -- | Global-to-output scale (for resolving measures)
+    Double ->
+    -- | Normalized-to-output scale (for resolving measures)
+    Double ->
+    RTree CanvasJson V2 Double Annotation ->
+    RenderM ()
+renderRTree' _ _ (Node (RPrim p) _) = unR $ render CanvasJson p
+renderRTree' gToO nToO (Node (RStyle sty) children) = do
     emit CmdSave
     oldSty <- gets _rsStyle
-    modify' $ \s -> s{_rsStyle = sty Prelude.<> _rsStyle s}
-    mapM_ renderRTree' children
-    modify' $ \s -> s{_rsStyle = oldSty}
+    oldLWMode <- gets _rsLineWidthMode
+    oldDashMode <- gets _rsDashMode
+    -- Classify measures before resolving, but only if the style actually
+    -- sets them. Otherwise keep the parent's mode.
+    -- Resolve the style with the actual scales, and also with a large nToO
+    -- to probe whether measures are view-relative (normalized/output).
+    let resolvedSty = unmeasureAttrs gToO nToO sty
+        probeSty = unmeasureAttrs gToO 1000 sty
+        -- Classify line width: compare resolved value at nToO=1 vs nToO=1000
+        lwMode = case (view _lineWidthU resolvedSty, view _lineWidthU probeSty) of
+            (Just lw1, Just lw2) -> if lw1 == lw2 then LWCoord else LWView
+            _ -> oldLWMode
+        -- Classify dashing: compare resolved dash lengths at nToO=1 vs nToO=1000
+        dashMode = case (view _dashingU resolvedSty, view _dashingU probeSty) of
+            (Just (Dashing ds1 _), Just (Dashing ds2 _)) -> if ds1 == ds2 then LWCoord else LWView
+            _ -> oldDashMode
+    modify' $ \s ->
+        s
+            { _rsStyle = resolvedSty Prelude.<> _rsStyle s
+            , _rsLineWidthMode = lwMode
+            , _rsDashMode = dashMode
+            }
+    mapM_ (renderRTree' gToO nToO) children
+    modify' $ \s -> s{_rsStyle = oldSty, _rsLineWidthMode = oldLWMode, _rsDashMode = oldDashMode}
     emit CmdRestore
-renderRTree' (Node (RAnnot _) children) = mapM_ renderRTree' children
-renderRTree' (Node REmpty children) = mapM_ renderRTree' children
+renderRTree' gToO nToO (Node (RAnnot _) children) = mapM_ (renderRTree' gToO nToO) children
+renderRTree' gToO nToO (Node REmpty children) = mapM_ (renderRTree' gToO nToO) children
 
 -- | Render a 2D transformation
 renderTransform :: T2 Double -> RenderM ()
 renderTransform tr = emit $ CmdTransform a1 a2 b1 b2 c1 c2
   where
-    [[a1, a2], [b1, b2], [c1, c2]] = matrixHomRep tr
+    mat = matrixHomRep tr
+    (a1, a2, b1, b2, c1, c2) = case mat of
+        [[x1, x2], [y1, y2], [z1, z2]] -> (x1, x2, y1, y2, z1, z2)
+        _ -> error "renderTransform: unexpected matrix shape from matrixHomRep"
 
 --------------------------------------------------------------------------------
 -- Renderable Instances
@@ -242,35 +381,49 @@ renderPath p = do
     emit CmdBeginPath
     mapM_ renderLocTrail (pathTrails p)
 
-    -- Apply fill if present
-    case extractFillColor sty of
-        Just (r, g, b, a) -> emit $ CmdFill r g b a
-        Nothing -> return ()
+    -- Only fill closed paths (loops). Open paths (lines) should not be
+    -- filled — canvas auto-closes open paths for fill, creating large
+    -- unintended polygons.
+    let hasClosed = any (isLoop . unLoc) (pathTrails p)
+    when hasClosed $
+        case extractFillColor sty of
+            Just (r, g, b, a) -> emit $ CmdFill r g b a
+            Nothing -> return ()
 
-    -- Apply stroke if present (default: black stroke with width 1)
+    -- Apply stroke if present and line width > 0.
+    -- Skip stroking when lineWidth is 0 (fill-only shapes like gerber regions).
     let lineW = fromMaybe 1 (extractLineWidth sty)
-    case extractLineColor sty of
-        Just (r, g, b, a) -> do
-            -- Set line properties
-            case getAttr sty of
-                Just LineCapButt -> emit $ CmdSetLineCap 0
-                Just LineCapRound -> emit $ CmdSetLineCap 1
-                Just LineCapSquare -> emit $ CmdSetLineCap 2
-                Nothing -> return ()
-            case getAttr sty of
-                Just LineJoinMiter -> emit $ CmdSetLineJoin 0
-                Just LineJoinRound -> emit $ CmdSetLineJoin 1
-                Just LineJoinBevel -> emit $ CmdSetLineJoin 2
-                Nothing -> return ()
-            case getAttr sty :: Maybe (Dashing Double) of
-                Just (Dashing ds _) -> emit $ CmdSetLineDash ds
-                Nothing -> return ()
-            emit $ CmdStroke r g b a lineW
-        Nothing ->
-            -- Default stroke if no fill and no explicit line color
-            case extractFillColor sty of
-                Nothing -> emit $ CmdStroke 0 0 0 1 lineW
-                Just _ -> return ()
+    when (lineW > 0) $ do
+        lwMode <- gets _rsLineWidthMode
+        let strokeCmd = case lwMode of
+                LWCoord -> CmdStroke
+                LWView -> CmdStrokeView
+        case extractLineColor sty of
+            Just (r, g, b, a) -> do
+                -- Set line properties
+                case getAttr sty of
+                    Just LineCapButt -> emit $ CmdSetLineCap 0
+                    Just LineCapRound -> emit $ CmdSetLineCap 1
+                    Just LineCapSquare -> emit $ CmdSetLineCap 2
+                    Nothing -> return ()
+                case getAttr sty of
+                    Just LineJoinMiter -> emit $ CmdSetLineJoin 0
+                    Just LineJoinRound -> emit $ CmdSetLineJoin 1
+                    Just LineJoinBevel -> emit $ CmdSetLineJoin 2
+                    Nothing -> return ()
+                case getAttr sty :: Maybe (Dashing Double) of
+                    Just (Dashing ds _) -> do
+                        dashMode <- gets _rsDashMode
+                        emit $ case dashMode of
+                            LWCoord -> CmdSetLineDash ds
+                            LWView -> CmdSetLineDashView ds
+                    Nothing -> return ()
+                emit $ strokeCmd r g b a lineW
+            Nothing ->
+                -- Default stroke if no fill and no explicit line color
+                when (not hasClosed || isNothing (extractFillColor sty)) $
+                    emit $
+                        strokeCmd 0 0 0 1 lineW
 
 -- | Render a located trail
 renderLocTrail :: Located (Trail V2 Double) -> RenderM ()
@@ -292,9 +445,9 @@ renderTrail t startPt = withTrail renderLine renderLoop t
 
 -- | Render a single segment, converting offsets to absolute coordinates
 renderSeg :: Segment Closed V2 Double -> RenderM ()
-renderSeg (Linear (OffsetClosed offset)) = do
+renderSeg (Linear (OffsetClosed off)) = do
     P (V2 cx cy) <- getPos
-    let V2 dx dy = offset
+    let V2 dx dy = off
         newX = cx + dx
         newY = cy + dy
     emit $ CmdLineTo newX newY
@@ -327,33 +480,39 @@ instance Renderable (Text Double) CanvasJson where
 -- Style Helpers
 --------------------------------------------------------------------------------
 
--- | Extract fill color from style as RGBA (0-255 for RGB, 0-1 for alpha)
+{- | Extract fill color from style as RGBA (0-255 for RGB, 0-1 for alpha).
+Multiplies color alpha by the FillOpacity attribute (default 1.0).
+-}
 extractFillColor :: Style V2 Double -> Maybe (Double, Double, Double, Double)
 extractFillColor sty = do
     ft <- getAttr sty :: Maybe (FillTexture Double)
     SomeColor c <- toColor (getFillTexture ft)
-    let (r, g, b, a) = colorToRGBA c
-    Just (r * 255, g * 255, b * 255, a)
+    let (r, g, b, a) = colorToSRGBA c
+        fo = view _fillOpacity sty
+    Just (r * 255, g * 255, b * 255, a * fo)
   where
     toColor (SC (SomeColor c)) = Just (SomeColor c)
     toColor _ = Nothing
 
--- | Extract line color from style as RGBA
+{- | Extract line color from style as RGBA.
+Multiplies color alpha by the StrokeOpacity attribute (default 1.0).
+-}
 extractLineColor :: Style V2 Double -> Maybe (Double, Double, Double, Double)
 extractLineColor sty = do
     lt <- getAttr sty :: Maybe (LineTexture Double)
     SomeColor c <- toColor (getLineTexture lt)
-    let (r, g, b, a) = colorToRGBA c
-    Just (r * 255, g * 255, b * 255, a)
+    let (r, g, b, a) = colorToSRGBA c
+        so = view _strokeOpacity sty
+    Just (r * 255, g * 255, b * 255, a * so)
   where
     toColor (SC (SomeColor c)) = Just (SomeColor c)
     toColor _ = Nothing
 
--- | Extract line width from style (simplified - uses Output measure)
+{- | Extract line width from style.
+Uses the '_lineWidthU' lens which gives the unmeasured (resolved) value.
+-}
 extractLineWidth :: Style V2 Double -> Maybe Double
-extractLineWidth sty = do
-    lineW <- getAttr sty :: Maybe (LineWidth (Maybe Double))
-    getLineWidth lineW
+extractLineWidth sty = view _lineWidthU sty
 
 --------------------------------------------------------------------------------
 -- High-level Rendering
@@ -375,12 +534,14 @@ renderCanvasJson opts d =
             Just (P (V2 minX minY), P (V2 maxX maxY)) ->
                 BBox minX minY maxX maxY
 
-        opts' = CanvasJsonOpts sz
-
-        -- Render the diagram (raw coordinates, frontend handles scaling)
-        rt = toRTree mempty d
-        cmds = renderRTree CanvasJson opts' rt
-     in CanvasDiagram w h bounds cmds
+        -- Use toDTree + fromDTree to get an RTree with unresolved measures.
+        -- We resolve measures ourselves in renderRTree' so we can classify
+        -- line width measures as coordinate-space (local) vs view-relative (output).
+        gToO = 1 :: Double -- global-to-output scale (identity since we use raw coords)
+        nToO = sqrt (w * h) :: Double -- normalized-to-output scale (standard diagrams convention)
+        rt = fromDTree $ fromMaybe (Node DEmpty []) $ toDTree gToO nToO d
+        cmds = runRenderM (renderRTree' gToO nToO rt)
+     in CanvasDiagram w h bounds cmds (_canvasJsonPrecision opts)
 
 -- | Convert size spec to actual dimensions
 sizeFromSpec :: Double -> SizeSpec V2 Double -> V2 Double
@@ -389,3 +550,158 @@ sizeFromSpec defSize spec = case getSpec spec of
     V2 (Just w) Nothing -> V2 w defSize
     V2 Nothing (Just h) -> V2 defSize h
     V2 Nothing Nothing -> V2 defSize defSize
+
+--------------------------------------------------------------------------------
+-- Command optimization
+--------------------------------------------------------------------------------
+
+{- | Optimize a command stream by collapsing consecutive Save\/Restore groups
+that share the same context-setting commands into a single group, and by
+stripping transparent fills and strokes that draw nothing.
+
+Before optimization each primitive is wrapped in its own group:
+@[S, B, M .., L .., F r g b a, LC 1, K r g b a lw, R]@ repeated many times.
+
+After optimization, consecutive groups with identical context (fill color,
+stroke color, line cap, line join, line dash, GCO) are merged into one group
+where the context is set once using @FS@\/@KS@ and each primitive uses the
+no-args @f@\/@k@ commands.
+-}
+optimizeCommands :: [CanvasCmd] -> [CanvasCmd]
+optimizeCommands = mergeGroups . stripTransparent
+
+-- | Remove fills and strokes with zero alpha since they draw nothing.
+stripTransparent :: [CanvasCmd] -> [CanvasCmd]
+stripTransparent = filter (not . isTransparent)
+  where
+    isTransparent (CmdFill _ _ _ a) = a < 0.001
+    isTransparent (CmdStroke _ _ _ a _) = a < 0.001
+    isTransparent (CmdStrokeView _ _ _ a _) = a < 0.001
+    isTransparent _ = False
+
+{- | Merge consecutive Save\/Restore groups that have identical context-setting
+commands into a single group. Context commands (fill color, stroke color, line
+cap, join, dash, GCO) are extracted and set once at the top of the merged group
+using @CmdSetFillColor@\/@CmdSetStrokeColor@, and the per-primitive
+@CmdFill@\/@CmdStroke@ are replaced with @CmdFillCurrent@\/@CmdStrokeCurrent@.
+-}
+mergeGroups :: [CanvasCmd] -> [CanvasCmd]
+mergeGroups [] = []
+mergeGroups (CmdSave : rest) =
+    let (group, remaining) = extractGroup 1 [] rest
+        ctx = extractContext group
+        body = stripContext group
+     in case collectMergeable ctx remaining of
+            ([], _) ->
+                -- No mergeable followers, emit original group
+                CmdSave : group ++ mergeGroups remaining
+            (bodies, remaining') ->
+                -- Merge: emit one S, context setup, all bodies, R
+                [CmdSave]
+                    ++ contextToSetCmds ctx
+                    ++ concatMap (\b -> CmdBeginPath : stripLeadingBeginPath b) (body : bodies)
+                    ++ [CmdRestore]
+                    ++ mergeGroups remaining'
+mergeGroups (cmd : rest) = cmd : mergeGroups rest
+
+-- | Extract a balanced Save/Restore group for optimization.
+extractGroup :: Int -> [CanvasCmd] -> [CanvasCmd] -> ([CanvasCmd], [CanvasCmd])
+extractGroup 0 acc rest = (reverse acc, rest)
+extractGroup _ acc [] = (reverse acc, [])
+extractGroup depth acc (CmdSave : rest) =
+    extractGroup (depth + 1) (CmdSave : acc) rest
+extractGroup depth acc (CmdRestore : rest)
+    | depth == 1 = (reverse (CmdRestore : acc), rest)
+    | otherwise = extractGroup (depth - 1) (CmdRestore : acc) rest
+extractGroup depth acc (cmd : rest) =
+    extractGroup depth (cmd : acc) rest
+
+-- | Collect consecutive S...R groups that share the same context.
+collectMergeable :: GroupContext -> [CanvasCmd] -> ([[CanvasCmd]], [CanvasCmd])
+collectMergeable _ [] = ([], [])
+collectMergeable ctx (CmdSave : rest) =
+    let (group, remaining) = extractGroup 1 [] rest
+        ctx' = extractContext group
+     in if ctx == ctx'
+            then
+                let body = stripContext group
+                    (more, remaining') = collectMergeable ctx remaining
+                 in (body : more, remaining')
+            else ([], CmdSave : group ++ remaining)
+collectMergeable _ cmds = ([], cmds)
+
+-- | Whether a stroke uses coordinate-space or view-relative line widths.
+data StrokeMode = StrokeCoord | StrokeView
+    deriving (Show, Eq)
+
+-- | Context extracted from a Save/Restore group for comparison.
+data GroupContext = GroupContext
+    { gcFill :: Maybe (Double, Double, Double, Double)
+    , gcStroke :: Maybe (StrokeMode, Double, Double, Double, Double, Double)
+    , gcLineCap :: Maybe Int
+    , gcLineJoin :: Maybe Int
+    , gcLineDash :: Maybe (StrokeMode, [Double])
+    , gcGCO :: Maybe String
+    }
+    deriving (Eq)
+
+-- | Extract context-setting commands from a group's body.
+extractContext :: [CanvasCmd] -> GroupContext
+extractContext = foldr extract emptyCtx
+  where
+    emptyCtx = GroupContext Nothing Nothing Nothing Nothing Nothing Nothing
+    extract (CmdFill r g b a) ctx = ctx{gcFill = Just (r, g, b, a)}
+    extract (CmdStroke r g b a lw') ctx = ctx{gcStroke = Just (StrokeCoord, r, g, b, a, lw')}
+    extract (CmdStrokeView r g b a lw') ctx = ctx{gcStroke = Just (StrokeView, r, g, b, a, lw')}
+    extract (CmdSetLineCap c) ctx = ctx{gcLineCap = Just c}
+    extract (CmdSetLineJoin j) ctx = ctx{gcLineJoin = Just j}
+    extract (CmdSetLineDash ds) ctx = ctx{gcLineDash = Just (StrokeCoord, ds)}
+    extract (CmdSetLineDashView ds) ctx = ctx{gcLineDash = Just (StrokeView, ds)}
+    extract (CmdSetGlobalCompositeOperation gco) ctx = ctx{gcGCO = Just gco}
+    extract _ ctx = ctx
+
+-- | Convert a GroupContext to setup commands using the set-only variants.
+contextToSetCmds :: GroupContext -> [CanvasCmd]
+contextToSetCmds ctx =
+    maybe [] (\(r, g, b, a) -> [CmdSetFillColor r g b a]) (gcFill ctx)
+        ++ maybe
+            []
+            ( \case
+                (StrokeCoord, r, g, b, a, lw') -> [CmdSetStrokeColor r g b a lw']
+                (StrokeView, r, g, b, a, lw') -> [CmdSetStrokeColorView r g b a lw']
+            )
+            (gcStroke ctx)
+        ++ maybe [] (\c -> [CmdSetLineCap c]) (gcLineCap ctx)
+        ++ maybe [] (\j -> [CmdSetLineJoin j]) (gcLineJoin ctx)
+        ++ maybe
+            []
+            ( \case
+                (StrokeCoord, ds) -> [CmdSetLineDash ds]
+                (StrokeView, ds) -> [CmdSetLineDashView ds]
+            )
+            (gcLineDash ctx)
+        ++ maybe [] (\gco -> [CmdSetGlobalCompositeOperation gco]) (gcGCO ctx)
+
+{- | Strip context-setting commands from a group body, replacing inline
+Fill/Stroke with FillCurrent/StrokeCurrent, and removing the trailing Restore.
+-}
+stripContext :: [CanvasCmd] -> [CanvasCmd]
+stripContext = concatMap convert . filter (not . isContextOnly)
+  where
+    convert CmdFill{} = [CmdFillCurrent]
+    convert CmdStroke{} = [CmdStrokeCurrent]
+    convert CmdStrokeView{} = [CmdStrokeCurrent]
+    convert CmdRestore = []
+    convert cmd = [cmd]
+
+    isContextOnly (CmdSetLineCap _) = True
+    isContextOnly (CmdSetLineJoin _) = True
+    isContextOnly (CmdSetLineDash _) = True
+    isContextOnly (CmdSetLineDashView _) = True
+    isContextOnly (CmdSetGlobalCompositeOperation _) = True
+    isContextOnly _ = False
+
+-- | Strip a leading BeginPath from a body (since we add one ourselves).
+stripLeadingBeginPath :: [CanvasCmd] -> [CanvasCmd]
+stripLeadingBeginPath (CmdBeginPath : rest) = rest
+stripLeadingBeginPath cmds = cmds

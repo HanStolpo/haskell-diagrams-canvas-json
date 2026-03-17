@@ -1,4 +1,5 @@
-import { fetchAndRenderDiagram } from "../src/lib/index.js";
+import type { CanvasDiagram } from "../src/lib/index.js";
+import { renderDiagram } from "../src/lib/index.js";
 
 const statusEl = document.getElementById("status") as HTMLDivElement;
 const examplesContainer = document.getElementById("examples") as HTMLDivElement;
@@ -62,7 +63,12 @@ async function loadCanvasForExample(name: string): Promise<void> {
     const canvas = document.createElement("canvas");
 
     // Fetch and render the diagram
-    await fetchAndRenderDiagram(canvas, `/api/example/${name}/json`, {
+    const response = await fetch(`/api/example/${name}/json`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    const diagram: CanvasDiagram = await response.json();
+    renderDiagram(canvas, diagram, {
       backgroundColor: { r: 255, g: 255, b: 255, a: 1 },
     });
 
