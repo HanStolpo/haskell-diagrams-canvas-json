@@ -11,19 +11,50 @@ diagrams-canvas-json/
 │   ├── exe/                    # Development server executable
 │   └── diagrams-canvas-json.cabal
 ├── diagrams-canvas-json-web/   # TypeScript/Canvas rendering library
-│   ├── src/lib/                # Library source (canvas renderer)
+│   ├── src/lib/                # Library source (canvas renderer + viewer)
 │   └── dev/                    # Development frontend
+├── gerber-diagrams-canvas-json/ # Gerber PCB artwork to canvas JSON
+│   ├── src/                    # Library source (gerber rendering + compositing)
+│   ├── exe/                    # CLI tool (to-json, view, board-to-json, etc.)
+│   ├── data/                   # Test gerber and SVG reference data
+│   └── gerber-diagrams-canvas-json.cabal
 ├── cabal.project               # Cabal project config
 └── flake.nix                   # Nix flake for development environment
 ```
 
-## Current Status
+## Packages
 
-The canvas backend is functional and renders most diagrams correctly:
+### diagrams-canvas-json (Haskell)
 
-- **Haskell Backend**: Encodes diagrams as compact JSON command arrays
-- **TypeScript Renderer**: Executes commands on HTML Canvas with proper scaling
-- **Development UI**: Side-by-side comparison of `diagrams-svg` vs `diagrams-canvas-json`
+A diagrams backend that renders to compact JSON command arrays for Canvas execution. Features:
+
+- **Coordinate-space vs view-relative line widths**: `K`/`KS` commands scale with the diagram transform (for gerber traces, local/global measures); `KV`/`KSV` commands maintain constant visual width regardless of zoom (for normalized/output measures like `veryThick`, `thin`, etc.)
+- **Independent dash pattern modes**: `LD` (coordinate-space) and `LDV` (view-relative), classified separately from line width
+- **Fill/stroke separation**: Only closed paths are filled; stroke is skipped when lineWidth=0; alpha is multiplied by fill/stroke opacity attributes
+- **Command optimization**: Consecutive Save/Restore groups sharing the same context are collapsed into set-only commands (`FS`, `KS`, `KSV`); transparent fills and strokes are stripped
+- **Configurable JSON precision**: Per-category decimal place control (coordinates, alpha, transforms, line widths, dashes, angles) using `Scientific` numbers to avoid IEEE 754 bloat
+- **Measure classification**: Line width and dashing measures are classified by probing `unmeasureAttrs` with different normalized-to-output scales, correctly handling `local`, `global`, `normalized`, `output`, and `atLeast` combinations
+
+### gerber-diagrams-canvas-json (Haskell)
+
+Converts Gerber PCB artwork files to canvas JSON with post-processing for multi-layer board visualization. Features:
+
+- **Polarity compositing**: Dark/clear shapes via `destination-out` canvas blending
+- **Outline extraction**: Contour welding with spatial index for joining segments by endpoint proximity, detecting board outline vs cutouts
+- **Layer clipping**: Constrain layer content to board outline via `destination-in` compositing
+- **Multi-layer board rendering**: Configurable layer stack with colors, outline modes, base color, and prepreg color (`BoardSpec`)
+- **Automatic JSON precision**: Coordinate precision derived from Gerber format spec and unit conversion
+
+CLI tool with commands: `to-json`, `view`, `outline-to-json`, `outline-view`, `composite-to-json`, `composite-view`, `clip-to-json`, `clip-view`, `board-to-json`, `board-view`.
+
+### diagrams-canvas-json-web (TypeScript)
+
+TypeScript library for rendering canvas JSON output in the browser. Features:
+
+- **Canvas renderer**: Interprets the command stream onto an HTML Canvas context
+- **Pan/zoom viewer**: `createViewer()` with mouse wheel zoom, drag pan, stacked canvas layers for compositing, and checkerboard transparency background
+- **Command and custom layers**: Render pre-colored command layers and custom overlay layers sharing the same pan/zoom transform
+- **View-relative support**: `KV`/`KSV` and `LDV` commands are divided by the current zoom scale for constant visual appearance
 
 ## Quick Start
 
@@ -122,14 +153,14 @@ The backend outputs a compact command-based JSON format:
   "height": 400,
   "bounds": { "minX": -1, "minY": -1, "maxX": 1, "maxY": 1 },
   "commands": [
-    ["S"], // Save
-    ["B"], // BeginPath
-    ["M", 1, 0], // MoveTo x y
-    ["C", 1, 0.55, 0.55, 1, 0, 1], // BezierTo cx1 cy1 cx2 cy2 x y
-    ["Z"], // ClosePath
-    ["F", 0, 0, 255, 1], // Fill r g b a (0-255 for RGB, 0-1 for alpha)
-    ["K", 0, 0, 0, 1, 2], // Stroke r g b a lineWidth
-    ["R"] // Restore
+    ["S"],
+    ["B"],
+    ["M", 1, 0],
+    ["C", 1, 0.5523, 0.5523, 1, 0, 1],
+    ["Z"],
+    ["F", 0, 0, 255, 1],
+    ["KV", 128, 0, 128, 1, 4],
+    ["R"]
   ]
 }
 ```
@@ -138,38 +169,17 @@ See `diagrams-canvas-json-web/src/lib/types.ts` for full command definitions.
 
 ## Current Limitations
 
-- **Measure-based line widths**: Line width attributes like `veryThick`,
-  `thick`, etc. that use the `Measure` type don't resolve properly. Only
-  explicit `Output` measure widths work correctly.
 - **Text rendering**: Basic text rendering works but font sizing and alignment
   need improvement.
 - **Gradients and patterns**: Only solid color fills and strokes are supported.
-
-## Future Improvements
-
-- [ ] Proper `Measure` resolution for line widths (requires passing global-to-output transformation)
-- [ ] Font size resolution from `Measure` values
-- [ ] Text alignment support (currently ignores alignment)
-- [ ] Gradient and pattern fill support
-- [ ] Clip path support
-- [ ] Image embedding
-- [ ] Performance optimization for large diagrams
+- **Pure `output` measures**: Measures using only `output` (without `normalized`
+  via `atLeast`) may not be classified correctly as view-relative. In practice
+  this is rare since the standard diagrams line width constants all use
+  `normalized ... `atLeast` output ...`.
 
 ## Example output of dev server
 
 ![Dev server example output](images/dev-server-example-output.png)
-
-## Roadmap
-
-1. [x] Set up project structure
-2. [x] Create development server with SVG examples
-3. [x] Create web frontend to display examples
-4. [x] Implement `diagrams-canvas-json` backend (JSON output)
-5. [x] Implement canvas renderer for JSON diagrams
-6. [x] Add side-by-side SVG vs Canvas comparison in dev UI
-7. [ ] Resolve `Measure`-based attributes properly
-8. [ ] Add comprehensive test suite
-9. [ ] Publish to Hackage and npm
 
 ## License
 

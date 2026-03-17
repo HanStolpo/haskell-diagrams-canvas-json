@@ -9,10 +9,12 @@ diagrams-canvas-json-web/
 ├── package.json          # Node package with vite & typescript deps
 ├── tsconfig.json         # TypeScript config for library builds
 ├── vite.config.ts        # Vite dev server config (port 3000, proxies /api to :8080)
+├── vite.lib.config.ts    # Vite config for building the bundled library
 ├── src/lib/
 │   ├── index.ts          # Library entry point
 │   ├── types.ts          # TypeScript types for diagram JSON schema
-│   └── renderer.ts       # Canvas rendering implementation
+│   ├── renderer.ts       # Canvas rendering implementation
+│   └── viewer.ts         # Pan/zoom layered viewer
 └── dev/
     ├── index.html        # Dev server page
     └── main.ts           # Dev entry point - fetches and displays examples
@@ -71,32 +73,69 @@ The Vite dev server proxies `/api/*` requests to `http://localhost:8080`:
 
 ## Library Usage
 
+### Basic Rendering
+
 ```typescript
-import { renderDiagram, fetchAndRenderDiagram } from "diagrams-canvas-json-web";
-import type { CanvasDiagram, RenderOptions } from "diagrams-canvas-json-web";
+import { renderDiagram } from "diagrams-canvas-json-web";
+import type { CanvasDiagram } from "diagrams-canvas-json-web";
 
-// Fetch and render from a URL
 const canvas = document.getElementById("my-canvas") as HTMLCanvasElement;
-await fetchAndRenderDiagram(canvas, "/api/example/circle/json");
 
-// Or render a diagram object directly
 const diagram: CanvasDiagram = {
   width: 400,
   height: 400,
   bounds: { minX: -1, minY: -1, maxX: 1, maxY: 1 },
   commands: [
-    ["B"], // BeginPath
-    ["M", 1, 0], // MoveTo
-    ["L", 0, 1], // LineTo
-    ["Z"], // ClosePath
-    ["F", 0, 0, 255, 1], // Fill blue
+    ["B"],
+    ["M", 1, 0],
+    ["C", 1, 0.5523, 0.5523, 1, 0, 1],
+    ["Z"],
+    ["F", 0, 0, 255, 1],
   ],
 };
 
 renderDiagram(canvas, diagram, {
   backgroundColor: { r: 255, g: 255, b: 255, a: 1 },
-  padding: 0.9, // 10% padding around diagram
+  padding: 0.9,
 });
+```
+
+### Pan/Zoom Viewer
+
+```typescript
+import { createViewer } from "diagrams-canvas-json-web";
+import type { CommandLayer, BBox } from "diagrams-canvas-json-web";
+
+const container = document.getElementById("viewer")!;
+const bounds: BBox = { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+const layers: CommandLayer[] = [
+  { color: [184, 115, 51, 1], commands: copperCommands },
+  { color: [0, 100, 0, 0.85], commands: solderMaskCommands },
+];
+
+const viewer = createViewer({
+  container,
+  bounds,
+  commandLayers: layers,
+  // background: '#ffffff',  // solid background (default: checkerboard)
+  // padding: 0.9,           // 10% padding around diagram
+});
+
+// Update layers dynamically
+viewer.setCommandLayers(newLayers);
+
+// Add custom overlay layers
+viewer.setCustomLayers([{
+  render: (ctx, scale) => {
+    // Draw with the current pan/zoom transform already applied
+    ctx.strokeStyle = "red";
+    ctx.lineWidth = 2 / scale; // constant visual width
+    ctx.strokeRect(10, 10, 50, 50);
+  },
+}]);
+
+// Clean up when done
+viewer.destroy();
 ```
 
 ## Scripts
@@ -131,36 +170,48 @@ interface BBox {
 
 Commands are encoded as compact JSON arrays with a string opcode followed by parameters:
 
-| Opcode | Parameters                      | Description                               |
-| ------ | ------------------------------- | ----------------------------------------- |
-| `S`    | -                               | Save canvas state                         |
-| `R`    | -                               | Restore canvas state                      |
-| `T`    | a, b, c, d, e, f                | Apply transform matrix                    |
-| `B`    | -                               | Begin path                                |
-| `M`    | x, y                            | Move to (absolute)                        |
-| `L`    | x, y                            | Line to (absolute)                        |
-| `C`    | cx1, cy1, cx2, cy2, x, y        | Cubic bezier to                           |
-| `Q`    | cx, cy, x, y                    | Quadratic bezier to                       |
-| `A`    | cx, cy, r, startAngle, endAngle | Arc                                       |
-| `Z`    | -                               | Close path                                |
-| `F`    | r, g, b, a                      | Fill path (RGB 0-255, alpha 0-1)          |
-| `K`    | r, g, b, a, lineWidth           | Stroke path                               |
-| `LC`   | cap                             | Set line cap (0=butt, 1=round, 2=square)  |
-| `LJ`   | join                            | Set line join (0=miter, 1=round, 2=bevel) |
-| `LD`   | ...dashes                       | Set line dash pattern                     |
-| `FT`   | text, x, y                      | Fill text at position                     |
-| `SF`   | font                            | Set font                                  |
+| Opcode | Parameters                      | Description                                                      |
+| ------ | ------------------------------- | ---------------------------------------------------------------- |
+| `S`    | -                               | Save canvas state                                                |
+| `R`    | -                               | Restore canvas state                                             |
+| `T`    | a, b, c, d, e, f               | Apply transform matrix                                           |
+| `B`    | -                               | Begin path                                                       |
+| `M`    | x, y                            | Move to (absolute)                                               |
+| `L`    | x, y                            | Line to (absolute)                                               |
+| `C`    | cx1, cy1, cx2, cy2, x, y        | Cubic bezier to                                                  |
+| `Q`    | cx, cy, x, y                    | Quadratic bezier to                                              |
+| `A`    | cx, cy, r, startAngle, endAngle | Arc                                                              |
+| `Z`    | -                               | Close path                                                       |
+| `F`    | r, g, b, a                      | Fill path (RGB 0-255, alpha 0-1)                                 |
+| `K`    | r, g, b, a, lineWidth           | Stroke path (line width in diagram coords, scales with diagram)  |
+| `KV`   | r, g, b, a, lineWidth           | Stroke path (line width relative to view, constant visual width) |
+| `FS`   | r, g, b, a                      | Set fill color only (no fill operation)                          |
+| `KS`   | r, g, b, a, lineWidth           | Set stroke color + line width in diagram coords only             |
+| `KSV`  | r, g, b, a, lineWidth           | Set stroke color + line width relative to view only              |
+| `f`    | -                               | Fill using current fill style                                    |
+| `k`    | -                               | Stroke using current stroke style                                |
+| `LC`   | cap                             | Set line cap (0=butt, 1=round, 2=square)                         |
+| `LJ`   | join                            | Set line join (0=miter, 1=round, 2=bevel)                        |
+| `LD`   | ...dashes                       | Set line dash pattern (diagram coords)                           |
+| `LDV`  | ...dashes                       | Set line dash pattern (relative to view)                         |
+| `FT`   | text, x, y                      | Fill text at position                                            |
+| `SF`   | font                            | Set font                                                         |
+| `GCO`  | operation                       | Set globalCompositeOperation (e.g. "destination-out")            |
+
+### Coordinate-Space vs View-Relative
+
+Line widths and dash patterns come in two modes:
+
+- **Coordinate-space** (`K`, `KS`, `LD`): Values are in diagram units and scale with the diagram transform. Used for things like PCB trace widths where the width is part of the geometry.
+- **View-relative** (`KV`, `KSV`, `LDV`): Values are in pixels and maintain constant visual size regardless of zoom level. Used for UI-style line widths like `thin`, `thick`, `veryThick`, etc. The renderer divides these values by the current zoom scale.
 
 ### Coordinate System
 
 - The Haskell backend outputs coordinates in diagram space (typically centered at origin)
 - The renderer calculates a transform to fit the diagram bounds into the canvas
 - The Y-axis is flipped (diagram Y increases upward, canvas Y increases downward)
-- Line widths are adjusted by the inverse of the scale to maintain consistent visual width
-- Dash patterns are scaled to match the transform
 
 ## Current Limitations
 
-- **Line width scaling**: Works for explicit widths but `Measure`-based widths from diagrams don't resolve properly
 - **Text**: Basic text works but font sizing needs improvement
 - **Gradients**: Only solid colors supported (no gradients or patterns)
