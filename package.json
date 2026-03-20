@@ -16,9 +16,6 @@
       "types": "./diagrams-canvas-json-web/dist/pixi.d.ts"
     }
   },
-  "files": [
-    "diagrams-canvas-json-web/dist"
-  ],
   "scripts": {
     "prepare": "cd diagrams-canvas-json-web && npm install && npm run build:lib"
   },
