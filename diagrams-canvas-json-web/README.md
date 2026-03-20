@@ -125,14 +125,16 @@ const viewer = createViewer({
 viewer.setCommandLayers(newLayers);
 
 // Add custom overlay layers
-viewer.setCustomLayers([{
-  render: (ctx, scale) => {
-    // Draw with the current pan/zoom transform already applied
-    ctx.strokeStyle = "red";
-    ctx.lineWidth = 2 / scale; // constant visual width
-    ctx.strokeRect(10, 10, 50, 50);
+viewer.setCustomLayers([
+  {
+    render: (ctx, scale) => {
+      // Draw with the current pan/zoom transform already applied
+      ctx.strokeStyle = "red";
+      ctx.lineWidth = 2 / scale; // constant visual width
+      ctx.strokeRect(10, 10, 50, 50);
+    },
   },
-}]);
+]);
 
 // Clean up when done
 viewer.destroy();
@@ -174,7 +176,7 @@ Commands are encoded as compact JSON arrays with a string opcode followed by par
 | ------ | ------------------------------- | ---------------------------------------------------------------- |
 | `S`    | -                               | Save canvas state                                                |
 | `R`    | -                               | Restore canvas state                                             |
-| `T`    | a, b, c, d, e, f               | Apply transform matrix                                           |
+| `T`    | a, b, c, d, e, f                | Apply transform matrix                                           |
 | `B`    | -                               | Begin path                                                       |
 | `M`    | x, y                            | Move to (absolute)                                               |
 | `L`    | x, y                            | Line to (absolute)                                               |

@@ -49,7 +49,7 @@
       }
       .pane-labels {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: 1fr 1fr 1fr;
         gap: 0;
         margin-bottom: 5px;
         padding: 0 10px;
@@ -85,7 +85,7 @@
       }
       .example-content {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: 1fr 1fr 1fr;
         min-height: 250px;
       }
       .example-pane {
@@ -124,6 +124,25 @@
         max-height: 100%;
         object-fit: contain;
       }
+      .pixi-pane {
+        background: #fafafa;
+        border-left: 1px solid #ddd;
+      }
+      .pixi-pane canvas {
+        border: 1px dashed #ccc;
+        background: white;
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+      }
+      .pixi-pane.loading {
+        color: #666;
+        font-style: italic;
+      }
+      .pixi-pane.error {
+        color: #dc3545;
+        font-size: 12px;
+      }
       .placeholder-text {
         color: #999;
         font-style: italic;
@@ -134,7 +153,7 @@
   <body>
     <div class="header-row">
       <h1>diagrams-canvas-json Dev Server</h1>
-      <p>Left: diagrams-svg | Right: diagrams-canvas-json</p>
+      <p>Left: diagrams-svg | Middle: Canvas 2D | Right: PixiJS</p>
     </div>
 
     <div id="status" class="status">Loading examples...</div>

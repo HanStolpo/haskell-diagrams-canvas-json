@@ -33,7 +33,7 @@ function lineJoinToString(join: number): CanvasLineJoin {
  * Calculate transform to fit diagram bounds into canvas with padding
  * Returns transform parameters and scale factor
  */
-function calculateFitTransform(
+export function calculateFitTransform(
   canvasWidth: number,
   canvasHeight: number,
   bounds: BBox,

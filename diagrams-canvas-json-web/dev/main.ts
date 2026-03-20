@@ -1,5 +1,7 @@
+import { Application } from "pixi.js";
 import type { CanvasDiagram } from "../src/lib/index.js";
 import { renderDiagram } from "../src/lib/index.js";
+import { renderDiagramPixi } from "../src/lib/renderer-pixi.js";
 
 const statusEl = document.getElementById("status") as HTMLDivElement;
 const examplesContainer = document.getElementById("examples") as HTMLDivElement;
@@ -23,6 +25,9 @@ function createExampleCard(name: string): HTMLElement {
       </div>
       <div class="example-pane canvas-pane loading" id="canvas-${name}">
         Loading Canvas...
+      </div>
+      <div class="example-pane pixi-pane loading" id="pixi-${name}">
+        Loading PixiJS...
       </div>
     </div>
   `;
@@ -81,6 +86,61 @@ async function loadCanvasForExample(name: string): Promise<void> {
   }
 }
 
+/**
+ * Render all PixiJS examples sequentially using a single shared Application
+ * to avoid exhausting WebGL context limits.
+ */
+async function loadAllPixiExamples(examples: string[]): Promise<void> {
+  // Create one shared PixiJS application
+  const app = new Application();
+  await app.init({
+    width: 600,
+    height: 600,
+    resolution: window.devicePixelRatio ?? 1,
+    autoDensity: true,
+    antialias: true,
+  });
+
+  for (const name of examples) {
+    const pixiPane = document.getElementById(`pixi-${name}`);
+    if (!pixiPane) continue;
+
+    try {
+      const response = await fetch(`/api/example/${name}/json`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      const diagram: CanvasDiagram = await response.json();
+
+      // Resize app to match diagram
+      app.renderer.resize(diagram.width, diagram.height);
+
+      // Render into the shared app
+      renderDiagramPixi(app, diagram, {
+        backgroundColor: { r: 255, g: 255, b: 255, a: 1 },
+      });
+
+      // Force a render and extract as an image
+      app.render();
+      const dataUrl = app.canvas.toDataURL("image/png");
+
+      const img = document.createElement("img");
+      img.src = dataUrl;
+      img.alt = `${name} diagram (PixiJS)`;
+
+      pixiPane.innerHTML = "";
+      pixiPane.className = "example-pane pixi-pane";
+      pixiPane.appendChild(img);
+    } catch (err) {
+      pixiPane.className = "example-pane pixi-pane error";
+      pixiPane.textContent = `Failed to load: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  // Clean up the shared app
+  app.destroy(true);
+}
+
 async function loadExamples(): Promise<void> {
   try {
     setStatus("Fetching example list from Haskell server...");
@@ -100,10 +160,11 @@ async function loadExamples(): Promise<void> {
       examplesContainer.appendChild(card);
     }
 
-    // Load SVGs and Canvas diagrams in parallel
+    // Load SVGs and Canvas diagrams in parallel, then PixiJS sequentially
     await Promise.all([
       ...examples.map(loadSvgForExample),
       ...examples.map(loadCanvasForExample),
+      loadAllPixiExamples(examples),
     ]);
 
     setStatus(`Loaded ${examples.length} examples successfully!`, "success");

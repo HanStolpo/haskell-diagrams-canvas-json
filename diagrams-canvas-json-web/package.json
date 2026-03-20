@@ -10,6 +10,10 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./pixi": {
+      "import": "./dist/pixi.js",
+      "types": "./dist/pixi.d.ts"
     }
   },
   "files": [
@@ -28,5 +32,8 @@
     "vite": "^6.0.0"
   },
   "author": "Handré Stolp",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "pixi.js": "^8.17.1"
+  }
 }
