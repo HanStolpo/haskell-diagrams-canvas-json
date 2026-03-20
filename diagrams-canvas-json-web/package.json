@@ -24,6 +24,7 @@
     "build": "tsc && vite build",
     "build:lib": "tsc",
     "build:bundle": "vite build --config vite.lib.config.ts",
+    "build:bundle-pixi": "vite build --config vite.pixi.config.ts",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
   },

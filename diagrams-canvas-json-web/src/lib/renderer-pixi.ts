@@ -2,24 +2,12 @@ import {
   Application,
   Container,
   Graphics,
-  GraphicsContextSystem,
+  GraphicsContext,
   Matrix,
   Text,
 } from "pixi.js";
 import type { CanvasDiagram, CanvasCommand, Color, BBox } from "./types.js";
 import { calculateFitTransform } from "./renderer.js";
-
-/** A buffered path operation to replay into Graphics */
-interface PathOp {
-  type:
-    | "moveTo"
-    | "lineTo"
-    | "bezierCurveTo"
-    | "quadraticCurveTo"
-    | "arc"
-    | "closePath";
-  args: number[];
-}
 
 /** Drawing state tracked manually (Canvas 2D has this built-in) */
 interface DrawState {
@@ -60,7 +48,7 @@ function defaultState(): DrawState {
 }
 
 /** Convert RGBA (0-255 for RGB) to a hex number for PixiJS */
-function rgbaToHex(r: number, g: number, b: number): number {
+export function rgbaToHex(r: number, g: number, b: number): number {
   return (
     ((Math.round(r) & 0xff) << 16) |
     ((Math.round(g) & 0xff) << 8) |
@@ -120,15 +108,12 @@ function compositeOpToBlendMode(op: string): string {
 }
 
 /**
- * Approximate a circular arc with cubic bezier curves.
- * Splits the arc into segments of at most PI/2 and uses the standard
- * cubic bezier approximation for each segment.
- *
- * Like Canvas 2D arc(), this first adds a lineTo from the current point
- * to the arc start, then emits bezier segments for the arc itself.
+ * Emit a circular arc as bezier segments onto a GraphicsContext.
+ * Splits into segments of at most PI/2, using the standard cubic bezier
+ * approximation for each segment.
  */
-function replayArc(
-  g: Graphics,
+function emitArc(
+  ctx: GraphicsContext,
   cx: number,
   cy: number,
   r: number,
@@ -139,18 +124,11 @@ function replayArc(
   if (sweep === 0) return;
 
   const absSweep = Math.abs(sweep);
-
-  // Split into segments of at most PI/2
   const segCount = Math.ceil(absSweep / (Math.PI / 2));
   const segSweep = sweep / segCount;
 
-  // Move to arc start
-  const sx = cx + r * Math.cos(startAngle);
-  const sy = cy + r * Math.sin(startAngle);
-  g.moveTo(sx, sy);
+  ctx.moveTo(cx + r * Math.cos(startAngle), cy + r * Math.sin(startAngle));
 
-  // For each segment, compute the cubic bezier control points
-  // Using the standard approximation: alpha = (4/3) * tan(sweep/4)
   for (let i = 0; i < segCount; i++) {
     const a1 = startAngle + i * segSweep;
     const a2 = a1 + segSweep;
@@ -161,70 +139,28 @@ function replayArc(
     const cos2 = Math.cos(a2);
     const sin2 = Math.sin(a2);
 
-    const cp1x = cx + r * (cos1 - alpha * sin1);
-    const cp1y = cy + r * (sin1 + alpha * cos1);
-    const cp2x = cx + r * (cos2 + alpha * sin2);
-    const cp2y = cy + r * (sin2 - alpha * cos2);
-    const ex = cx + r * cos2;
-    const ey = cy + r * sin2;
-
-    g.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, ex, ey, 0.99);
-  }
-}
-
-/**
- * Replay buffered path operations onto a Graphics object.
- * Bezier/quadratic curves use smoothness=0.99 to ensure fine tessellation
- * even when diagram-space coordinates are small (e.g. radius ~1).
- */
-function replayPath(g: Graphics, buffer: PathOp[]): void {
-  for (const op of buffer) {
-    switch (op.type) {
-      case "moveTo":
-        g.moveTo(op.args[0], op.args[1]);
-        break;
-      case "lineTo":
-        g.lineTo(op.args[0], op.args[1]);
-        break;
-      case "bezierCurveTo":
-        g.bezierCurveTo(
-          op.args[0],
-          op.args[1],
-          op.args[2],
-          op.args[3],
-          op.args[4],
-          op.args[5],
-          0.99,
-        );
-        break;
-      case "quadraticCurveTo":
-        g.quadraticCurveTo(
-          op.args[0],
-          op.args[1],
-          op.args[2],
-          op.args[3],
-          0.99,
-        );
-        break;
-      case "arc":
-        replayArc(
-          g,
-          op.args[0],
-          op.args[1],
-          op.args[2],
-          op.args[3],
-          op.args[4],
-        );
-        break;
-      case "closePath":
-        g.closePath();
-        break;
-    }
+    ctx.bezierCurveTo(
+      cx + r * (cos1 - alpha * sin1),
+      cy + r * (sin1 + alpha * cos1),
+      cx + r * (cos2 + alpha * sin2),
+      cy + r * (sin2 - alpha * cos2),
+      cx + r * cos2,
+      cy + r * sin2,
+      0.99,
+    );
   }
 }
 
 /**
  * Execute a list of canvas commands, populating a PixiJS Container.
+ *
+ * Uses a single GraphicsContext per blend-mode group, accumulating all
+ * path/fill/stroke operations. This dramatically reduces draw calls compared
+ * to creating a new Graphics object per fill/stroke.
+ *
+ * Transforms are handled via GraphicsContext.save/restore/setTransform.
+ * A new Graphics object is only created when the blend mode changes.
+ *
  * @param parent - The Container to add display objects to
  * @param commands - The command stream to interpret
  * @param scale - The current transform scale, used for view-relative line widths
@@ -235,40 +171,36 @@ export function executeCommandsPixi(
   scale: number,
 ): void {
   let state = defaultState();
-  const stateStack: { state: DrawState; container: Container }[] = [];
-  let currentContainer = parent;
-  let pathBuffer: PathOp[] = [];
+  const stateStack: DrawState[] = [];
 
-  function doFill(r: number, g: number, b: number, a: number): void {
-    if (pathBuffer.length === 0) return;
-    const g2 = new Graphics();
-    g2.context.beginPath();
-    replayPath(g2, pathBuffer);
-    g2.fill({ color: rgbaToHex(r, g, b), alpha: a });
-    g2.blendMode = state.blendMode as never;
-    currentContainer.addChild(g2);
+  // Current GraphicsContext and its Graphics wrapper — one per blend-mode group
+  let ctx: GraphicsContext | null = null;
+
+  // Track the current transform so we can re-apply it after flushing
+  let currentTransform = new Matrix();
+  const transformStack: Matrix[] = [];
+
+  /** Ensure we have a GraphicsContext for the current blend mode. */
+  function ensureGfx(): GraphicsContext {
+    if (!ctx) {
+      ctx = new GraphicsContext();
+      const gfx = new Graphics(ctx);
+      gfx.blendMode = state.blendMode as never;
+      parent.addChild(gfx);
+      // Apply the current accumulated transform to the fresh context
+      ctx.setTransform(currentTransform);
+    }
+    return ctx;
   }
 
-  function doStroke(
-    r: number,
-    g: number,
-    b: number,
-    a: number,
-    lineWidth: number,
-  ): void {
-    if (pathBuffer.length === 0) return;
-    const g2 = new Graphics();
-    g2.context.beginPath();
-    replayPath(g2, pathBuffer);
-    g2.stroke({
-      color: rgbaToHex(r, g, b),
-      alpha: a,
-      width: lineWidth,
-      cap: state.lineCap,
-      join: state.lineJoin,
-    });
-    g2.blendMode = state.blendMode as never;
-    currentContainer.addChild(g2);
+  /** Flush the current context and start a new one (on blend mode change). */
+  function flushGfx(): void {
+    ctx = null;
+  }
+
+  /** Return the current context if one exists (helper for TypeScript narrowing). */
+  function currentCtx(): GraphicsContext | null {
+    return ctx;
   }
 
   for (const cmd of commands) {
@@ -277,20 +209,22 @@ export function executeCommandsPixi(
     switch (opcode) {
       // State management
       case "S": {
-        const child = new Container();
-        currentContainer.addChild(child);
-        stateStack.push({
-          state: cloneState(state),
-          container: currentContainer,
-        });
-        currentContainer = child;
+        currentCtx()?.save();
+        transformStack.push(currentTransform.clone());
+        stateStack.push(cloneState(state));
         break;
       }
       case "R": {
-        const entry = stateStack.pop();
-        if (entry) {
-          state = entry.state;
-          currentContainer = entry.container;
+        const savedState = stateStack.pop();
+        const savedTransform = transformStack.pop();
+        if (savedState && savedTransform) {
+          if (savedState.blendMode !== state.blendMode) {
+            flushGfx();
+          } else {
+            currentCtx()?.restore();
+          }
+          state = savedState;
+          currentTransform = savedTransform;
         }
         break;
       }
@@ -298,70 +232,87 @@ export function executeCommandsPixi(
       // Transform
       case "T": {
         const [, a, b, c, d, e, f] = cmd;
-        const child = new Container();
-        child.setFromMatrix(new Matrix(a, b, c, d, e, f));
-        currentContainer.addChild(child);
-        currentContainer = child;
+        const m = new Matrix(a, b, c, d, e, f);
+        currentTransform = currentTransform.append(m);
+        currentCtx()?.setTransform(currentTransform);
         break;
       }
 
       // Path commands
-      case "B":
-        pathBuffer = [];
+      case "B": {
+        const c = ensureGfx();
+        c.beginPath();
         break;
+      }
       case "M": {
+        const c = ensureGfx();
         const [, x, y] = cmd;
-        pathBuffer.push({ type: "moveTo", args: [x, y] });
+        c.moveTo(x, y);
         break;
       }
       case "L": {
+        const c = ensureGfx();
         const [, x, y] = cmd;
-        pathBuffer.push({ type: "lineTo", args: [x, y] });
+        c.lineTo(x, y);
         break;
       }
       case "C": {
+        const c = ensureGfx();
         const [, cx1, cy1, cx2, cy2, x, y] = cmd;
-        pathBuffer.push({
-          type: "bezierCurveTo",
-          args: [cx1, cy1, cx2, cy2, x, y],
-        });
+        c.bezierCurveTo(cx1, cy1, cx2, cy2, x, y, 0.99);
         break;
       }
       case "Q": {
+        const c = ensureGfx();
         const [, cx, cy, x, y] = cmd;
-        pathBuffer.push({ type: "quadraticCurveTo", args: [cx, cy, x, y] });
+        c.quadraticCurveTo(cx, cy, x, y, 0.99);
         break;
       }
       case "A": {
-        const [, cx, cy, r, startAngle, endAngle] = cmd;
-        pathBuffer.push({
-          type: "arc",
-          args: [cx, cy, r, startAngle, endAngle],
-        });
+        const c = ensureGfx();
+        const [, acx, acy, ar, startAngle, endAngle] = cmd;
+        emitArc(c, acx, acy, ar, startAngle, endAngle);
         break;
       }
-      case "Z":
-        pathBuffer.push({ type: "closePath", args: [] });
+      case "Z": {
+        const c = ensureGfx();
+        c.closePath();
         break;
+      }
 
       // Fill with color
       case "F": {
+        const c = ensureGfx();
         const [, r, g, b, a] = cmd;
-        doFill(r, g, b, a);
+        c.fill({ color: rgbaToHex(r, g, b), alpha: a });
         break;
       }
 
       // Stroke (coordinate-space line width)
       case "K": {
+        const c = ensureGfx();
         const [, r, g, b, a, lineWidth] = cmd;
-        doStroke(r, g, b, a, lineWidth);
+        c.stroke({
+          color: rgbaToHex(r, g, b),
+          alpha: a,
+          width: lineWidth,
+          cap: state.lineCap,
+          join: state.lineJoin,
+        });
         break;
       }
 
       // Stroke (view-relative line width)
       case "KV": {
+        const c = ensureGfx();
         const [, r, g, b, a, lineWidth] = cmd;
-        doStroke(r, g, b, a, lineWidth / scale);
+        c.stroke({
+          color: rgbaToHex(r, g, b),
+          alpha: a,
+          width: lineWidth / scale,
+          cap: state.lineCap,
+          join: state.lineJoin,
+        });
         break;
       }
 
@@ -392,18 +343,26 @@ export function executeCommandsPixi(
 
       // Fill using current style
       case "f": {
+        const c = ensureGfx();
         const { r, g, b, a } = state.fillColor;
-        doFill(r, g, b, a);
+        c.fill({ color: rgbaToHex(r, g, b), alpha: a });
         break;
       }
 
       // Stroke using current style
       case "k": {
+        const c = ensureGfx();
         const { r, g, b, a } = state.strokeColor;
         const w = state.lineWidthViewRelative
           ? state.lineWidth / scale
           : state.lineWidth;
-        doStroke(r, g, b, a, w);
+        c.stroke({
+          color: rgbaToHex(r, g, b),
+          alpha: a,
+          width: w,
+          cap: state.lineCap,
+          join: state.lineJoin,
+        });
         break;
       }
 
@@ -425,18 +384,19 @@ export function executeCommandsPixi(
         // Line dash not supported in PixiJS Graphics
         break;
 
-      // Text
+      // Text — requires its own display object
       case "FT": {
         const [, text, x, y] = cmd;
         const t = new Text({ text, style: { fontFamily: state.font } });
-        t.x = x;
-        t.y = y;
+        const pt = currentTransform.apply({ x, y });
+        t.x = pt.x;
+        t.y = pt.y;
         t.scale.y = -1; // Counter the Y-axis flip
         const { r, g, b, a } = state.fillColor;
         t.style.fill = rgbaToHex(r, g, b);
         t.alpha = a;
         t.blendMode = state.blendMode as never;
-        currentContainer.addChild(t);
+        parent.addChild(t);
         break;
       }
       case "SF": {
@@ -445,10 +405,14 @@ export function executeCommandsPixi(
         break;
       }
 
-      // Composite operation
+      // Composite operation — flush Graphics, next shapes get new blend mode
       case "GCO": {
         const [, operation] = cmd;
-        state.blendMode = compositeOpToBlendMode(operation);
+        const newMode = compositeOpToBlendMode(operation);
+        if (newMode !== state.blendMode) {
+          flushGfx();
+          state.blendMode = newMode;
+        }
         break;
       }
 
@@ -510,6 +474,45 @@ export function renderDiagramPixi(
   app.stage.addChild(root);
 
   executeCommandsPixi(root, diagram.commands, transform.scale);
+}
+
+/**
+ * Transform a command stream so all shapes render as white on transparent.
+ *
+ * Used by the mask-texture viewer: each layer is rendered white-on-transparent
+ * to a RenderTexture, then displayed via a tinted Sprite.
+ *
+ * - All fill/stroke color commands get their RGBA replaced with white (255,255,255,1)
+ * - GCO commands pass through unchanged (PixiJS erase handles destination-out)
+ * - All other commands pass through unchanged
+ */
+export function toMaskCommands(commands: CanvasCommand[]): CanvasCommand[] {
+  const result: CanvasCommand[] = [];
+  for (const cmd of commands) {
+    switch (cmd[0]) {
+      case "F":
+        result.push(["F", 255, 255, 255, 1]);
+        break;
+      case "K":
+        result.push(["K", 255, 255, 255, 1, cmd[5]]);
+        break;
+      case "KV":
+        result.push(["KV", 255, 255, 255, 1, cmd[5]]);
+        break;
+      case "FS":
+        result.push(["FS", 255, 255, 255, 1]);
+        break;
+      case "KS":
+        result.push(["KS", 255, 255, 255, 1, cmd[5]]);
+        break;
+      case "KSV":
+        result.push(["KSV", 255, 255, 255, 1, cmd[5]]);
+        break;
+      default:
+        result.push(cmd);
+    }
+  }
+  return result;
 }
 
 /**

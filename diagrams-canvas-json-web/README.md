@@ -6,15 +6,19 @@ TypeScript library for rendering [diagrams-canvas-json](../diagrams-canvas-json)
 
 ```
 diagrams-canvas-json-web/
-├── package.json          # Node package with vite & typescript deps
+├── package.json          # Node package with vite, typescript, pixi.js deps
 ├── tsconfig.json         # TypeScript config for library builds
 ├── vite.config.ts        # Vite dev server config (port 3000, proxies /api to :8080)
-├── vite.lib.config.ts    # Vite config for building the bundled library
+├── vite.lib.config.ts    # Vite config for Canvas 2D IIFE bundle
+├── vite.pixi.config.ts   # Vite config for PixiJS IIFE bundle (includes pixi.js)
 ├── src/lib/
-│   ├── index.ts          # Library entry point
+│   ├── index.ts          # Library entry point (Canvas 2D)
+│   ├── pixi.ts           # Library entry point (PixiJS backend)
 │   ├── types.ts          # TypeScript types for diagram JSON schema
-│   ├── renderer.ts       # Canvas rendering implementation
-│   └── viewer.ts         # Pan/zoom layered viewer
+│   ├── renderer.ts       # Canvas 2D rendering implementation
+│   ├── renderer-pixi.ts  # PixiJS rendering implementation
+│   ├── viewer.ts         # Pan/zoom layered viewer (Canvas 2D)
+│   └── viewer-pixi.ts    # Pan/zoom layered viewer (PixiJS, mask-texture compositing)
 └── dev/
     ├── index.html        # Dev server page
     └── main.ts           # Dev entry point - fetches and displays examples
@@ -56,8 +60,9 @@ Or start them individually:
 The dev server displays all diagram examples from the [diagrams quickstart guide](https://diagrams.github.io/doc/quickstart.html):
 
 - Each example shows as a card with the example name
-- Left side: SVG rendered by `diagrams-svg` (fetched from Haskell server)
-- Right side: Canvas rendering using `diagrams-canvas-json` (fetched as JSON)
+- Left: SVG rendered by `diagrams-svg` (fetched from Haskell server)
+- Middle: Canvas 2D rendering using `diagrams-canvas-json` (fetched as JSON)
+- Right: PixiJS (WebGL) rendering of the same JSON
 
 This side-by-side layout allows visual comparison between the two backends.
 
@@ -140,11 +145,93 @@ viewer.setCustomLayers([
 viewer.destroy();
 ```
 
+### PixiJS Rendering
+
+An alternative renderer using [PixiJS 8.x](https://pixijs.com/) for WebGL/WebGPU-accelerated rendering. It interprets the same `CanvasCommand[]` stream as the Canvas 2D renderer. Import from the separate `./pixi` entry point to keep PixiJS tree-shakeable for users who only need Canvas 2D.
+
+```typescript
+import { Application } from "pixi.js";
+import { renderDiagramPixi } from "diagrams-canvas-json-web/pixi";
+import type { CanvasDiagram } from "diagrams-canvas-json-web/pixi";
+
+const app = new Application();
+await app.init({
+  width: diagram.width,
+  height: diagram.height,
+  antialias: true,
+});
+document.body.appendChild(app.canvas);
+
+renderDiagramPixi(app, diagram, {
+  backgroundColor: { r: 255, g: 255, b: 255, a: 1 },
+  padding: 0.9,
+});
+```
+
+Or use the convenience `createPixiApp` helper:
+
+```typescript
+import {
+  createPixiApp,
+  renderDiagramPixi,
+} from "diagrams-canvas-json-web/pixi";
+
+const app = await createPixiApp(diagram, {
+  backgroundColor: { r: 255, g: 255, b: 255, a: 1 },
+});
+renderDiagramPixi(app, diagram, {
+  backgroundColor: { r: 255, g: 255, b: 255, a: 1 },
+});
+document.body.appendChild(app.canvas);
+```
+
+### PixiJS Pan/Zoom Viewer
+
+A PixiJS-based pan/zoom viewer with mask-texture compositing for correct gerber layer rendering:
+
+```typescript
+import { createPixiViewer } from "diagrams-canvas-json-web/pixi";
+import type { CommandLayer, BBox } from "diagrams-canvas-json-web/pixi";
+
+const container = document.getElementById("viewer")!;
+const bounds: BBox = { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+const layers: CommandLayer[] = [
+  { color: [184, 115, 51, 1], commands: copperCommands },
+  { color: [0, 100, 0, 0.85], commands: solderMaskCommands },
+];
+
+const viewer = await createPixiViewer({
+  container,
+  bounds,
+  commandLayers: layers,
+  // background: '#ffffff',  // solid background (default: checkerboard)
+  // padding: 0.9,           // 10% padding around diagram
+});
+
+// Update layers dynamically
+viewer.setCommandLayers(newLayers);
+
+// Clean up when done
+viewer.destroy();
+```
+
+Each layer is rendered as white-on-transparent to a RenderTexture at viewport resolution, then displayed as a tinted Sprite. This correctly handles gerber polarity compositing: `destination-out` (punch holes) uses the PixiJS `erase` blend mode within the RenderTexture, and `destination-in` (clip to outline) uses a second RenderTexture as a PixiJS mask.
+
+#### PixiJS Limitations
+
+- **Line dash patterns** (`LD`, `LDV`): Not supported — PixiJS Graphics has no native dash API. Dashed lines render as solid.
+- **Composite operations** (`GCO`): Common modes (`source-over`, `multiply`, `screen`, `destination-out`, etc.) are mapped to PixiJS blend modes. Unsupported operations fall back to `normal` with a console warning.
+- **Curve tessellation**: PixiJS always tessellates curves into line segments internally. The renderer uses `smoothness: 0.99` to ensure high-quality tessellation even for small diagram-space coordinates, but this means more vertices than Canvas 2D which renders true curves.
+- **WebGL context limits**: Browsers limit active WebGL contexts (~16). Creating many PixiJS Applications simultaneously will cause earlier contexts to be lost. The dev app works around this by sharing a single Application and extracting rendered images.
+- **Text rendering**: Uses PixiJS `Text` objects with a Y-axis counter-flip. Font parsing from the CSS font string is basic.
+
 ## Scripts
 
 - `npm run dev` - Start Vite dev server
 - `npm run build` - Build library and dev assets
 - `npm run build:lib` - Build library only (TypeScript compilation)
+- `npm run build:bundle` - Build Canvas 2D IIFE bundle for CLI viewers
+- `npm run build:bundle-pixi` - Build PixiJS IIFE bundle for CLI viewers
 - `npm run typecheck` - Type check without emitting
 - `npm run preview` - Preview production build
 

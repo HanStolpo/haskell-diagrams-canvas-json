@@ -6,9 +6,17 @@
  */
 
 export type { CanvasDiagram, CanvasCommand, Color, BBox } from "./types.js";
+export type {
+  CommandLayer,
+  CustomLayer,
+  CustomLayerRenderer,
+} from "./viewer.js";
 export {
   executeCommandsPixi,
   renderDiagramPixi,
   createPixiApp,
+  toMaskCommands,
 } from "./renderer-pixi.js";
 export type { RenderPixiOptions } from "./renderer-pixi.js";
+export { createPixiViewer } from "./viewer-pixi.js";
+export type { PixiViewer, PixiViewerOptions } from "./viewer-pixi.js";

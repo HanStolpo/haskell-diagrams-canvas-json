@@ -29,9 +29,13 @@ import System.FilePath (takeDirectory, (</>))
 import System.IO (hPutStrLn, stderr)
 import Web.Scotty (get, raw, scotty, setHeader)
 
--- | Name of the bundled JS library file.
+-- | Name of the bundled Canvas 2D JS library file.
 jsBundleFileName :: FilePath
 jsBundleFileName = "diagrams-canvas-json-web.iife.js"
+
+-- | Name of the bundled PixiJS library file.
+pixiJsBundleFileName :: FilePath
+pixiJsBundleFileName = "diagrams-canvas-json-web-pixi.iife.js"
 
 {- | Resolve the path to the JS bundle.
 
@@ -58,6 +62,31 @@ readJsBundle = do
             hPutStrLn stderr "To build it: cd diagrams-canvas-json-web && npm run build:bundle"
             exitFailure
 
+{- | Resolve the path to the PixiJS bundle.
+
+Uses the @DIAGRAMS_CANVAS_JSON_WEB_DIR@ environment variable if set,
+otherwise falls back to the default path relative to the project root.
+-}
+resolvePixiJsBundlePath :: IO FilePath
+resolvePixiJsBundlePath = do
+    mDir <- lookupEnv "DIAGRAMS_CANVAS_JSON_WEB_DIR"
+    pure $ case mDir of
+        Just dir -> dir </> pixiJsBundleFileName
+        Nothing -> "diagrams-canvas-json-web" </> "dist" </> pixiJsBundleFileName
+
+-- | Read the PixiJS bundle, failing with a helpful message if not found.
+readPixiJsBundle :: IO BL.ByteString
+readPixiJsBundle = do
+    path <- resolvePixiJsBundlePath
+    result <- try (BL.readFile path) :: IO (Either SomeException BL.ByteString)
+    case result of
+        Right bs -> pure bs
+        Left _ -> do
+            hPutStrLn stderr $ "Error: Could not read PixiJS bundle at: " <> path
+            hPutStrLn stderr "Set DIAGRAMS_CANVAS_JSON_WEB_DIR to the directory containing the built JS library."
+            hPutStrLn stderr "To build it: cd diagrams-canvas-json-web && npm run build:bundle-pixi"
+            exitFailure
+
 -- | CLI commands
 data Command
     = ToJson !FilePath
@@ -70,6 +99,8 @@ data Command
     | ClipView !FilePath !FilePath !Int
     | BoardToJson !FilePath
     | BoardView !FilePath !Int
+    | ViewPixi !FilePath !Int
+    | BoardViewPixi !FilePath !Int
 
 commandParser :: ParserInfo Command
 commandParser =
@@ -91,6 +122,8 @@ commandParser =
                 <> command "clip-view" (info clipViewCmd (progDesc "View a gerber layer clipped to an outline shape in the browser"))
                 <> command "board-to-json" (info boardToJsonCmd (progDesc "Render board view from gerber layers to JSON on stdout"))
                 <> command "board-view" (info boardViewCmd (progDesc "View board rendering from gerber layers in the browser"))
+                <> command "view-pixi" (info viewPixiCmd (progDesc "View a gerber file using PixiJS WebGL viewer"))
+                <> command "board-view-pixi" (info boardViewPixiCmd (progDesc "View board rendering using PixiJS WebGL viewer"))
             )
 
     toJsonCmd =
@@ -144,6 +177,16 @@ commandParser =
             <$> argument str (metavar "SPEC_FILE" <> help "Path to JSON board spec file")
             <*> portOpt
 
+    viewPixiCmd =
+        ViewPixi
+            <$> argument str (metavar "GERBER_FILE" <> help "Path to gerber file")
+            <*> portOpt
+
+    boardViewPixiCmd =
+        BoardViewPixi
+            <$> argument str (metavar "SPEC_FILE" <> help "Path to JSON board spec file")
+            <*> portOpt
+
     portOpt = option auto (long "port" <> short 'p' <> value 3000 <> metavar "PORT" <> help "Port to serve on (default: 3000)")
     outlineFlag = switch (long "outline" <> help "Treat base layer as an outline (fill the path instead of stroking)")
 
@@ -161,6 +204,8 @@ main = do
         ClipView contentPath outlinePath port -> runClipView contentPath outlinePath port
         BoardToJson specPath -> runBoardToJson specPath
         BoardView specPath port -> runBoardView specPath port
+        ViewPixi filePath port -> runViewPixi filePath port
+        BoardViewPixi specPath port -> runBoardViewPixi specPath port
 
 runToJson :: FilePath -> IO ()
 runToJson filePath = do
@@ -443,6 +488,136 @@ boardViewerHtml name =
         , "  if (!resp.ok) throw new Error('HTTP ' + resp.status);"
         , "  const diagram = await resp.json();"
         , "  DiagramsCanvasJson.createViewer({"
+        , "    container: document.getElementById('wrap'),"
+        , "    bounds: diagram.bounds,"
+        , "    commandLayers: diagram.layers,"
+        , "  });"
+        , "}"
+        , "main().catch(e => {"
+        , "  document.getElementById('error').textContent = 'Error: ' + e.message;"
+        , "});"
+        , "</script>"
+        , "</body></html>"
+        ]
+
+--------------------------------------------------------------------------------
+-- Single-layer PixiJS viewer
+--------------------------------------------------------------------------------
+
+runViewPixi :: FilePath -> Int -> IO ()
+runViewPixi filePath port = do
+    src <- T.readFile filePath
+    case renderGerber defaultRenderOptions src of
+        Left err -> do
+            hPutStrLn stderr $ "Error: " <> err
+            exitFailure
+        Right diagram ->
+            serveViewerPixi (T.pack filePath) diagram port
+
+serveViewerPixi :: T.Text -> CanvasDiagram -> Int -> IO ()
+serveViewerPixi name diagram port = do
+    let jsonBytes = Aeson.encode diagram
+    pixiBundle <- readPixiJsBundle
+    putStrLn $ "Serving PixiJS viewer at http://localhost:" <> show port
+    scotty port $ do
+        get "/" $ do
+            setHeader "Content-Type" "text/html; charset=utf-8"
+            raw . BL.fromStrict . TE.encodeUtf8 $ viewerPixiHtml name
+
+        get "/api/gerber/json" $ do
+            setHeader "Content-Type" "application/json"
+            raw jsonBytes
+
+        get "/lib/diagrams-canvas-json-web-pixi.js" $ do
+            setHeader "Content-Type" "application/javascript"
+            raw pixiBundle
+
+viewerPixiHtml :: T.Text -> T.Text
+viewerPixiHtml name =
+    T.unlines
+        [ "<!DOCTYPE html>"
+        , "<html><head>"
+        , "<meta charset=\"utf-8\">"
+        , "<title>Gerber Viewer (PixiJS) - " <> escapeHtml name <> "</title>"
+        , "<style>"
+        , viewerCss
+        , "</style>"
+        , "</head><body>"
+        , "<h1>" <> escapeHtml name <> " (PixiJS)</h1>"
+        , "<div id=\"wrap\"></div>"
+        , "<div id=\"error\"></div>"
+        , "<script src=\"/lib/diagrams-canvas-json-web-pixi.js\"></script>"
+        , "<script>"
+        , "async function main() {"
+        , "  const resp = await fetch('/api/gerber/json');"
+        , "  if (!resp.ok) throw new Error('HTTP ' + resp.status);"
+        , "  const diagram = await resp.json();"
+        , "  await DiagramsCanvasJsonPixi.createPixiViewer({"
+        , "    container: document.getElementById('wrap'),"
+        , "    bounds: diagram.bounds,"
+        , "    commandLayers: [{ color: [0,0,0,1], commands: diagram.commands }],"
+        , "  });"
+        , "}"
+        , "main().catch(e => {"
+        , "  document.getElementById('error').textContent = 'Error: ' + e.message;"
+        , "});"
+        , "</script>"
+        , "</body></html>"
+        ]
+
+--------------------------------------------------------------------------------
+-- Board rendering (PixiJS viewer)
+--------------------------------------------------------------------------------
+
+runBoardViewPixi :: FilePath -> Int -> IO ()
+runBoardViewPixi specPath port = do
+    result <- loadBoard specPath
+    case result of
+        Left err -> do
+            hPutStrLn stderr $ "Error: " <> err
+            exitFailure
+        Right mld ->
+            serveBoardViewerPixi (T.pack specPath) mld port
+
+serveBoardViewerPixi :: T.Text -> MultiLayerDiagram -> Int -> IO ()
+serveBoardViewerPixi name mld port = do
+    let jsonBytes = Aeson.encode mld
+    pixiBundle <- readPixiJsBundle
+    putStrLn $ "Serving PixiJS board viewer at http://localhost:" <> show port
+    scotty port $ do
+        get "/" $ do
+            setHeader "Content-Type" "text/html; charset=utf-8"
+            raw . BL.fromStrict . TE.encodeUtf8 $ boardViewerPixiHtml name
+
+        get "/api/gerber/json" $ do
+            setHeader "Content-Type" "application/json"
+            raw jsonBytes
+
+        get "/lib/diagrams-canvas-json-web-pixi.js" $ do
+            setHeader "Content-Type" "application/javascript"
+            raw pixiBundle
+
+boardViewerPixiHtml :: T.Text -> T.Text
+boardViewerPixiHtml name =
+    T.unlines
+        [ "<!DOCTYPE html>"
+        , "<html><head>"
+        , "<meta charset=\"utf-8\">"
+        , "<title>Board Viewer (PixiJS) - " <> escapeHtml name <> "</title>"
+        , "<style>"
+        , viewerCss
+        , "</style>"
+        , "</head><body>"
+        , "<h1>" <> escapeHtml name <> " (PixiJS)</h1>"
+        , "<div id=\"wrap\"></div>"
+        , "<div id=\"error\"></div>"
+        , "<script src=\"/lib/diagrams-canvas-json-web-pixi.js\"></script>"
+        , "<script>"
+        , "async function main() {"
+        , "  const resp = await fetch('/api/gerber/json');"
+        , "  if (!resp.ok) throw new Error('HTTP ' + resp.status);"
+        , "  const diagram = await resp.json();"
+        , "  await DiagramsCanvasJsonPixi.createPixiViewer({"
         , "    container: document.getElementById('wrap'),"
         , "    bounds: diagram.bounds,"
         , "    commandLayers: diagram.layers,"

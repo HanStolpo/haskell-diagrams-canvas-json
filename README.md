@@ -45,14 +45,16 @@ Converts Gerber PCB artwork files to canvas JSON with post-processing for multi-
 - **Multi-layer board rendering**: Configurable layer stack with colors, outline modes, base color, and prepreg color (`BoardSpec`)
 - **Automatic JSON precision**: Coordinate precision derived from Gerber format spec and unit conversion
 
-CLI tool with commands: `to-json`, `view`, `outline-to-json`, `outline-view`, `composite-to-json`, `composite-view`, `clip-to-json`, `clip-view`, `board-to-json`, `board-view`.
+CLI tool with commands: `to-json`, `view`, `view-pixi`, `outline-to-json`, `outline-view`, `composite-to-json`, `composite-view`, `clip-to-json`, `clip-view`, `board-to-json`, `board-view`, `board-view-pixi`.
 
 ### diagrams-canvas-json-web (TypeScript)
 
 TypeScript library for rendering canvas JSON output in the browser. Features:
 
-- **Canvas renderer**: Interprets the command stream onto an HTML Canvas context
-- **Pan/zoom viewer**: `createViewer()` with mouse wheel zoom, drag pan, stacked canvas layers for compositing, and checkerboard transparency background
+- **Canvas 2D renderer**: Interprets the command stream onto an HTML Canvas context
+- **PixiJS renderer**: Alternative WebGL/WebGPU-accelerated backend using [PixiJS 8.x](https://pixijs.com/), consuming the same command stream (import from `diagrams-canvas-json-web/pixi`)
+- **Pan/zoom viewers**: Both Canvas 2D (`createViewer()`) and PixiJS (`createPixiViewer()`) viewers with mouse wheel zoom (cursor-anchored), drag pan, and checkerboard transparency background
+- **Mask-texture compositing** (PixiJS): Each layer is rendered as white-on-transparent to a RenderTexture, then displayed via tinted Sprites. Gerber polarity (`destination-out`) uses PixiJS erase blend mode; outline clipping (`destination-in`) uses a second RenderTexture as a PixiJS mask
 - **Command and custom layers**: Render pre-colored command layers and custom overlay layers sharing the same pan/zoom transform
 - **View-relative support**: `KV`/`KSV` and `LDV` commands are divided by the current zoom scale for constant visual appearance
 
@@ -176,6 +178,8 @@ See `diagrams-canvas-json-web/src/lib/types.ts` for full command definitions.
   via `atLeast`) may not be classified correctly as view-relative. In practice
   this is rare since the standard diagrams line width constants all use
   `normalized ... `atLeast` output ...`.
+- **PixiJS backend**: Line dash patterns are not supported (rendered as solid).
+  Only common `globalCompositeOperation` modes are mapped to PixiJS blend modes.
 
 ## Example output of dev server
 
