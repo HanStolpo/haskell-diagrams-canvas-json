@@ -1,0 +1,30 @@
+{
+  "name": "diagrams-canvas-json-web",
+  "version": "0.1.0",
+  "description": "TypeScript library for rendering diagrams-canvas-json output using HTML Canvas",
+  "type": "module",
+  "main": "./diagrams-canvas-json-web/dist/index.js",
+  "module": "./diagrams-canvas-json-web/dist/index.js",
+  "types": "./diagrams-canvas-json-web/dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./diagrams-canvas-json-web/dist/index.js",
+      "types": "./diagrams-canvas-json-web/dist/index.d.ts"
+    },
+    "./pixi": {
+      "import": "./diagrams-canvas-json-web/dist/pixi.js",
+      "types": "./diagrams-canvas-json-web/dist/pixi.d.ts"
+    }
+  },
+  "files": [
+    "diagrams-canvas-json-web/dist"
+  ],
+  "scripts": {
+    "prepare": "cd diagrams-canvas-json-web && npm install && npm run build:lib"
+  },
+  "dependencies": {
+    "pixi.js": "^8.17.1"
+  },
+  "author": "Handré Stolp",
+  "license": "MIT"
+}
