@@ -6,7 +6,7 @@ import {
   Matrix,
   Text,
 } from "pixi.js";
-import type { CanvasDiagram, CanvasCommand, Color, BBox } from "./types.js";
+import type { CanvasDiagram, CanvasCommand, Color } from "./types.js";
 import { calculateFitTransform } from "./renderer.js";
 
 /** Drawing state tracked manually (Canvas 2D has this built-in) */
