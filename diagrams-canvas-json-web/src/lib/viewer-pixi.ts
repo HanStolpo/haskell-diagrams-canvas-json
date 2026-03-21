@@ -235,19 +235,10 @@ export async function createPixiViewer(
   let tx = 0;
   let ty = 0;
 
-  // The transform state at which the RTs were last rendered
-  let renderedScale = 1;
-  let renderedTx = 0;
-  let renderedTy = 0;
-
   // Drag state
   let dragging = false;
   let lastX = 0;
   let lastY = 0;
-
-  // Debounce timer for full RT re-render
-  let renderTimer: ReturnType<typeof setTimeout> | null = null;
-  const RENDER_DEBOUNCE_MS = 150;
 
   // Initialize PixiJS Application
   const pr = window.devicePixelRatio || 1;
@@ -311,29 +302,7 @@ export async function createPixiViewer(
     );
   }
 
-  /** Render custom Canvas 2D overlay layers at the current transform. */
-  function renderOverlay(): void {
-    const ow = container.clientWidth;
-    const oh = container.clientHeight;
-    overlayCanvas.width = Math.round(ow * pr);
-    overlayCanvas.height = Math.round(oh * pr);
-    overlayCanvas.style.width = ow + "px";
-    overlayCanvas.style.height = oh + "px";
-    const octx = overlayCanvas.getContext("2d")!;
-    octx.setTransform(pr, 0, 0, pr, 0, 0);
-    octx.clearRect(0, 0, ow, oh);
-    for (const cl of customLayers) {
-      octx.save();
-      octx.transform(scale, 0, 0, -scale, tx, ty);
-      cl.render(octx, scale);
-      octx.restore();
-    }
-  }
-
-  /**
-   * Full render: re-render all layer scenes to their RenderTextures
-   * at the current transform, then reset sprites to identity.
-   */
+  /** Render all layer scenes to their RenderTextures at the current transform. */
   function renderFull(): void {
     const cw = container.clientWidth;
     const ch = container.clientHeight;
@@ -378,61 +347,26 @@ export async function createPixiViewer(
           clearColor: [0, 0, 0, 0],
         });
       }
-
-      // Reset sprite to identity (RT fills the viewport exactly)
-      ls.sprite.position.set(0, 0);
-      ls.sprite.scale.set(1, 1);
-      if (ls.clipSprite) {
-        ls.clipSprite.position.set(0, 0);
-        ls.clipSprite.scale.set(1, 1);
-      }
-    }
-
-    renderedScale = scale;
-    renderedTx = tx;
-    renderedTy = ty;
-
-    app.render();
-    renderOverlay();
-  }
-
-  /**
-   * Fast render: reposition/rescale sprites to approximate the current view
-   * without re-rendering the RenderTextures. Overlay is always re-rendered
-   * since Canvas 2D is cheap.
-   */
-  function renderFast(): void {
-    const r = scale / renderedScale;
-    const offsetX = tx - renderedTx * r;
-    const offsetY = ty - renderedTy * r;
-
-    for (const ls of layerStates) {
-      ls.sprite.scale.set(r, r);
-      ls.sprite.position.set(offsetX, offsetY);
-      if (ls.clipSprite) {
-        ls.clipSprite.scale.set(r, r);
-        ls.clipSprite.position.set(offsetX, offsetY);
-      }
     }
 
     app.render();
-    renderOverlay();
-  }
 
-  /**
-   * Schedule a debounced full RT re-render.
-   * Called on every pan/zoom frame — uses fast sprite transform immediately,
-   * then does a full re-render after interaction stops.
-   */
-  function scheduleRender(): void {
-    renderFast();
-    if (renderTimer !== null) {
-      clearTimeout(renderTimer);
+    // Render custom Canvas 2D overlay layers
+    const ow = container.clientWidth;
+    const oh = container.clientHeight;
+    overlayCanvas.width = Math.round(ow * pr);
+    overlayCanvas.height = Math.round(oh * pr);
+    overlayCanvas.style.width = ow + "px";
+    overlayCanvas.style.height = oh + "px";
+    const octx = overlayCanvas.getContext("2d")!;
+    octx.setTransform(pr, 0, 0, pr, 0, 0);
+    octx.clearRect(0, 0, ow, oh);
+    for (const cl of customLayers) {
+      octx.save();
+      octx.transform(scale, 0, 0, -scale, tx, ty);
+      cl.render(octx, scale);
+      octx.restore();
     }
-    renderTimer = setTimeout(() => {
-      renderTimer = null;
-      renderFull();
-    }, RENDER_DEBOUNCE_MS);
   }
 
   // Zoom on scroll, anchored at mouse position
@@ -446,7 +380,7 @@ export async function createPixiViewer(
     tx = mx - (mx - tx) * (newScale / scale);
     ty = my - (my - ty) * (newScale / scale);
     scale = newScale;
-    scheduleRender();
+    renderFull();
   }
 
   function onMouseDown(e: MouseEvent): void {
@@ -462,7 +396,7 @@ export async function createPixiViewer(
     ty += e.clientY - lastY;
     lastX = e.clientX;
     lastY = e.clientY;
-    scheduleRender();
+    renderFull();
   }
 
   function onMouseUp(): void {
@@ -495,7 +429,6 @@ export async function createPixiViewer(
     },
 
     destroy(): void {
-      if (renderTimer !== null) clearTimeout(renderTimer);
       container.removeEventListener("wheel", onWheel);
       container.removeEventListener("mousedown", onMouseDown);
       window.removeEventListener("mousemove", onMouseMove);
