@@ -82,6 +82,8 @@
 
           buildInputs = [
             pkgs.nodejs
+            pkgs.nodePackages_latest.typescript-language-server
+            pkgs.nodePackages_latest.typescript
           ];
         };
       };
