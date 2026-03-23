@@ -1,6 +1,13 @@
-import { Application, Container, RenderTexture, Sprite } from "pixi.js";
+import {
+  Application,
+  Container,
+  RenderTexture,
+  Sprite,
+  Texture,
+} from "pixi.js";
 import type { BBox, CanvasCommand } from "./types.js";
-import type { CommandLayer, CustomLayer } from "./viewer.js";
+import type { ViewerLayer } from "./viewer.js";
+import { isMaskLayer, isCustomLayer } from "./viewer.js";
 import {
   executeCommandsPixi,
   rgbaToHex,
@@ -26,15 +33,8 @@ export interface PixiViewerOptions {
   /** Padding factor for fitting diagram (0-1, default: 0.9 = 10% padding) */
   padding?: number;
 
-  /** Canvas command layers to render (bottom to top) */
-  commandLayers?: CommandLayer[];
-
-  /**
-   * Custom Canvas 2D overlay layers rendered on top of the PixiJS content.
-   * Each layer's render callback receives a 2D context with the same
-   * pan/zoom transform applied, so drawing happens in diagram/gerber space.
-   */
-  customLayers?: CustomLayer[];
+  /** Layers to render (bottom to top), command and custom layers interleaved */
+  layers?: ViewerLayer[];
 }
 
 /** Handle returned by createPixiViewer for controlling the viewer */
@@ -48,11 +48,8 @@ export interface PixiViewer {
   /** Clean up event listeners, PixiJS app, and DOM elements */
   destroy(): void;
 
-  /** Update the command layers and re-render */
-  setCommandLayers(layers: CommandLayer[]): void;
-
-  /** Update the custom Canvas 2D overlay layers and re-render */
-  setCustomLayers(layers: CustomLayer[]): void;
+  /** Update the layers and re-render */
+  setLayers(layers: ViewerLayer[]): void;
 
   /** Get the current view transform state */
   getTransform(): { scale: number; tx: number; ty: number };
@@ -64,23 +61,36 @@ export interface PixiViewer {
 const DEFAULT_CHECKERBOARD =
   "conic-gradient(#d5d0e6 90deg, #cde0f0 90deg 180deg, #d5d0e6 180deg 270deg, #cde0f0 270deg) 0 0 / 20px 20px";
 
-/** Per-layer rendering state */
-interface LayerState {
-  /** Scene container with mask commands, re-used across renders */
+/** Per-command-layer rendering state (renders commands directly to RT) */
+interface CommandLayerState {
+  kind: "command";
   scene: Container;
-  /** RenderTexture at viewport pixel size */
   renderTexture: RenderTexture;
-  /** Sprite on main stage displaying the tinted RT */
+  sprite: Sprite;
+}
+
+/** Per-mask-layer rendering state (white-on-transparent mask, tinted sprite) */
+interface MaskLayerState {
+  kind: "mask";
+  scene: Container;
+  renderTexture: RenderTexture;
   sprite: Sprite;
   /** Whether this layer has destination-in commands (needs clip mask) */
   hasClip: boolean;
-  /** Clip scene for destination-in content (only if hasClip) */
   clipScene?: Container;
-  /** Clip RT (only if hasClip) */
   clipTexture?: RenderTexture;
-  /** Clip sprite used as mask (only if hasClip) */
   clipSprite?: Sprite;
 }
+
+/** Per-custom-layer rendering state */
+interface CustomLayerState {
+  kind: "custom";
+  canvas: HTMLCanvasElement;
+  sprite: Sprite;
+  render: (ctx: CanvasRenderingContext2D, scale: number) => void;
+}
+
+type LayerState = CommandLayerState | MaskLayerState | CustomLayerState;
 
 /**
  * Check if commands contain a GCO destination-in and split at the boundary.
@@ -134,26 +144,41 @@ function splitAtDestinationIn(commands: CanvasCommand[]): {
   return { content, clip };
 }
 
-function buildLayerState(
+function buildCommandLayerState(
   app: Application,
-  layer: CommandLayer,
+  commands: CanvasCommand[],
   width: number,
   height: number,
   resolution: number,
   scale: number,
-): LayerState {
-  const maskCmds = toMaskCommands(layer.commands);
+): CommandLayerState {
+  const scene = new Container();
+  executeCommandsPixi(scene, commands, scale);
+  const renderTexture = RenderTexture.create({ width, height, resolution });
+  const sprite = new Sprite(renderTexture);
+  app.stage.addChild(sprite);
+  return { kind: "command", scene, renderTexture, sprite };
+}
+
+function buildMaskLayerState(
+  app: Application,
+  color: [number, number, number, number],
+  commands: CanvasCommand[],
+  width: number,
+  height: number,
+  resolution: number,
+  scale: number,
+): MaskLayerState {
+  const maskCmds = toMaskCommands(commands);
   const { content, clip } = splitAtDestinationIn(maskCmds);
   const hasClip = clip.length > 0;
 
-  // Build content scene
   const scene = new Container();
   executeCommandsPixi(scene, content, scale);
 
-  // Create RT and sprite (resolution handles physical pixel scaling)
   const renderTexture = RenderTexture.create({ width, height, resolution });
   const sprite = new Sprite(renderTexture);
-  const [r, g, b, a] = layer.color;
+  const [r, g, b, a] = color;
   sprite.tint = rgbaToHex(r, g, b);
   sprite.alpha = a;
   app.stage.addChild(sprite);
@@ -167,13 +192,12 @@ function buildLayerState(
     executeCommandsPixi(clipScene, clip, scale);
     clipTexture = RenderTexture.create({ width, height, resolution });
     clipSprite = new Sprite(clipTexture);
-    // Use clip sprite as mask on the content sprite
     sprite.mask = clipSprite;
-    // clipSprite must be added to the stage for masking to work
     app.stage.addChild(clipSprite);
   }
 
   return {
+    kind: "mask",
     scene,
     renderTexture,
     sprite,
@@ -184,13 +208,35 @@ function buildLayerState(
   };
 }
 
+function buildCustomLayerState(
+  app: Application,
+  render: (ctx: CanvasRenderingContext2D, scale: number) => void,
+  width: number,
+  height: number,
+): CustomLayerState {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const sprite = new Sprite(Texture.from(canvas));
+  app.stage.addChild(sprite);
+  return { kind: "custom", canvas, sprite, render };
+}
+
 function destroyLayerState(state: LayerState): void {
-  state.scene.destroy({ children: true });
-  state.renderTexture.destroy(true);
-  state.sprite.destroy();
-  if (state.clipScene) state.clipScene.destroy({ children: true });
-  if (state.clipTexture) state.clipTexture.destroy(true);
-  if (state.clipSprite) state.clipSprite.destroy();
+  if (state.kind === "command") {
+    state.scene.destroy({ children: true });
+    state.renderTexture.destroy(true);
+    state.sprite.destroy();
+  } else if (state.kind === "mask") {
+    state.scene.destroy({ children: true });
+    state.renderTexture.destroy(true);
+    state.sprite.destroy();
+    if (state.clipScene) state.clipScene.destroy({ children: true });
+    if (state.clipTexture) state.clipTexture.destroy(true);
+    if (state.clipSprite) state.clipSprite.destroy();
+  } else {
+    state.sprite.destroy();
+  }
 }
 
 /**
@@ -208,8 +254,7 @@ export async function createPixiViewer(
 ): Promise<PixiViewer> {
   const { container, bounds, padding = 0.9 } = options;
 
-  let commandLayers = options.commandLayers ?? [];
-  let customLayers = options.customLayers ?? [];
+  let layers: ViewerLayer[] = options.layers ?? [];
 
   // Apply background
   if (options.background !== null) {
@@ -263,16 +308,6 @@ export async function createPixiViewer(
   app.canvas.style.height = "100%";
   app.canvas.style.pointerEvents = "none";
 
-  // Transparent Canvas 2D overlay for custom layers (on top of PixiJS)
-  const overlayCanvas = document.createElement("canvas");
-  overlayCanvas.style.position = "absolute";
-  overlayCanvas.style.top = "0";
-  overlayCanvas.style.left = "0";
-  overlayCanvas.style.width = "100%";
-  overlayCanvas.style.height = "100%";
-  overlayCanvas.style.pointerEvents = "none";
-  container.appendChild(overlayCanvas);
-
   // Layer state
   let layerStates: LayerState[] = [];
 
@@ -297,9 +332,23 @@ export async function createPixiViewer(
     const cw = container.clientWidth;
     const ch = container.clientHeight;
 
-    layerStates = commandLayers.map((layer) =>
-      buildLayerState(app, layer, cw, ch, pr, scale),
-    );
+    layerStates = layers.map((layer) => {
+      if (isMaskLayer(layer)) {
+        return buildMaskLayerState(
+          app,
+          layer.color,
+          layer.commands,
+          cw,
+          ch,
+          pr,
+          scale,
+        );
+      } else if (isCustomLayer(layer)) {
+        return buildCustomLayerState(app, layer.render, cw, ch);
+      } else {
+        return buildCommandLayerState(app, layer.commands, cw, ch, pr, scale);
+      }
+    });
   }
 
   /** Render all layer scenes to their RenderTextures at the current transform. */
@@ -314,9 +363,11 @@ export async function createPixiViewer(
     ) {
       app.renderer.resize(cw, ch);
       for (const ls of layerStates) {
-        ls.renderTexture.resize(cw, ch, pr);
-        ls.sprite.texture = ls.renderTexture;
-        if (ls.clipTexture) {
+        if (ls.kind === "command" || ls.kind === "mask") {
+          ls.renderTexture.resize(cw, ch, pr);
+          ls.sprite.texture = ls.renderTexture;
+        }
+        if (ls.kind === "mask" && ls.clipTexture) {
           ls.clipTexture.resize(cw, ch, pr);
           if (ls.clipSprite) ls.clipSprite.texture = ls.clipTexture;
         }
@@ -329,44 +380,57 @@ export async function createPixiViewer(
       c.scale.set(scale, -scale);
     }
 
-    for (const ls of layerStates) {
-      applyViewTransform(ls.scene);
-      app.renderer.render({
-        container: ls.scene,
-        target: ls.renderTexture,
-        clear: true,
-        clearColor: [0, 0, 0, 0],
-      });
+    const pw = Math.round(cw * pr);
+    const ph = Math.round(ch * pr);
 
-      if (ls.hasClip && ls.clipScene && ls.clipTexture) {
-        applyViewTransform(ls.clipScene);
+    for (const ls of layerStates) {
+      if (ls.kind === "command") {
+        applyViewTransform(ls.scene);
         app.renderer.render({
-          container: ls.clipScene,
-          target: ls.clipTexture,
+          container: ls.scene,
+          target: ls.renderTexture,
           clear: true,
           clearColor: [0, 0, 0, 0],
         });
+      } else if (ls.kind === "mask") {
+        applyViewTransform(ls.scene);
+        app.renderer.render({
+          container: ls.scene,
+          target: ls.renderTexture,
+          clear: true,
+          clearColor: [0, 0, 0, 0],
+        });
+
+        if (ls.hasClip && ls.clipScene && ls.clipTexture) {
+          applyViewTransform(ls.clipScene);
+          app.renderer.render({
+            container: ls.clipScene,
+            target: ls.clipTexture,
+            clear: true,
+            clearColor: [0, 0, 0, 0],
+          });
+        }
+      } else {
+        // Render custom layer to offscreen canvas, upload as texture
+        const canvas = ls.canvas;
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        const ctx = canvas.getContext("2d")!;
+        ctx.setTransform(pr, 0, 0, pr, 0, 0);
+        ctx.clearRect(0, 0, cw, ch);
+        ctx.save();
+        ctx.transform(scale, 0, 0, -scale, tx, ty);
+        ls.render(ctx, scale);
+        ctx.restore();
+        ls.sprite.texture.source.resource = canvas;
+        ls.sprite.texture.source.resolution = pr;
+        ls.sprite.texture.source.update();
       }
     }
 
     app.render();
-
-    // Render custom Canvas 2D overlay layers
-    const ow = container.clientWidth;
-    const oh = container.clientHeight;
-    overlayCanvas.width = Math.round(ow * pr);
-    overlayCanvas.height = Math.round(oh * pr);
-    overlayCanvas.style.width = ow + "px";
-    overlayCanvas.style.height = oh + "px";
-    const octx = overlayCanvas.getContext("2d")!;
-    octx.setTransform(pr, 0, 0, pr, 0, 0);
-    octx.clearRect(0, 0, ow, oh);
-    for (const cl of customLayers) {
-      octx.save();
-      octx.transform(scale, 0, 0, -scale, tx, ty);
-      cl.render(octx, scale);
-      octx.restore();
-    }
   }
 
   // Zoom on scroll, anchored at mouse position
@@ -439,17 +503,11 @@ export async function createPixiViewer(
       }
       layerStates = [];
       app.destroy(true);
-      overlayCanvas.remove();
     },
 
-    setCommandLayers(layers: CommandLayer[]): void {
-      commandLayers = layers;
+    setLayers(newLayers: ViewerLayer[]): void {
+      layers = newLayers;
       rebuildLayers();
-      renderFull();
-    },
-
-    setCustomLayers(layers: CustomLayer[]): void {
-      customLayers = layers;
       renderFull();
     },
 

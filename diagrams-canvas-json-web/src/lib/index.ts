@@ -7,12 +7,19 @@
 export type { CanvasDiagram, CanvasCommand, Color, BBox } from "./types.js";
 export { executeCommands, renderDiagram } from "./renderer.js";
 export type { RenderOptions } from "./renderer.js";
-export { createViewer } from "./viewer.js";
+export {
+  createViewer,
+  isCommandLayer,
+  isCustomLayer,
+  isMaskLayer,
+} from "./viewer.js";
 export type {
   CommandLayer,
   CustomLayer,
   CustomLayerRenderer,
   LayeredDiagram,
+  MaskLayer,
   Viewer,
+  ViewerLayer,
   ViewerOptions,
 } from "./viewer.js";

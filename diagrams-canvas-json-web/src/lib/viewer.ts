@@ -1,8 +1,19 @@
 import type { BBox, CanvasCommand } from "./types.js";
 import { executeCommands } from "./renderer.js";
 
-/** A layer with pre-colored canvas commands */
+/** A layer with pre-colored canvas commands rendered as-is */
 export interface CommandLayer {
+  name?: string;
+  commands: CanvasCommand[];
+}
+
+/**
+ * A mask layer: commands define a white-on-transparent shape, tinted with color.
+ * In the Canvas 2D viewer the commands are rendered directly (colors are pre-baked
+ * by the backend). In the PixiJS viewer the commands are rendered as a mask texture
+ * and the sprite is tinted with the layer color.
+ */
+export interface MaskLayer {
   name?: string;
   color: [number, number, number, number];
   commands: CanvasCommand[];
@@ -13,7 +24,7 @@ export interface LayeredDiagram {
   width: number;
   height: number;
   bounds: BBox;
-  layers: CommandLayer[];
+  layers: MaskLayer[];
 }
 
 /**
@@ -31,8 +42,32 @@ export type CustomLayerRenderer = (
 
 /** Configuration for a custom canvas layer */
 export interface CustomLayer {
+  name?: string;
   /** Render callback invoked each frame */
   render: CustomLayerRenderer;
+}
+
+/** A viewer layer — command, mask, or custom */
+export type ViewerLayer = CommandLayer | MaskLayer | CustomLayer;
+
+/** Type guard: is this a MaskLayer? (has both color and commands) */
+export function isMaskLayer(layer: ViewerLayer): layer is MaskLayer {
+  return "commands" in layer && "color" in layer;
+}
+
+/** Type guard: is this a CommandLayer? (has commands but no color) */
+export function isCommandLayer(layer: ViewerLayer): layer is CommandLayer {
+  return "commands" in layer && !("color" in layer);
+}
+
+/** Type guard: is this a CustomLayer? (has render callback) */
+export function isCustomLayer(layer: ViewerLayer): layer is CustomLayer {
+  return "render" in layer;
+}
+
+/** Type guard: does this layer have commands? (CommandLayer or MaskLayer) */
+function hasCommands(layer: ViewerLayer): layer is CommandLayer | MaskLayer {
+  return "commands" in layer;
 }
 
 /** Options for creating a pan-zoom viewer */
@@ -54,15 +89,8 @@ export interface ViewerOptions {
   /** Padding factor for fitting diagram (0-1, default: 0.9 = 10% padding) */
   padding?: number;
 
-  /** Canvas command layers to render (bottom to top) */
-  commandLayers?: CommandLayer[];
-
-  /**
-   * Custom canvas layers rendered after command layers.
-   * Each custom layer gets its own stacked canvas with the same
-   * pan/zoom transform applied.
-   */
-  customLayers?: CustomLayer[];
+  /** Layers to render (bottom to top), command and custom layers interleaved */
+  layers?: ViewerLayer[];
 }
 
 /** Handle returned by createViewer for controlling the viewer */
@@ -76,11 +104,8 @@ export interface Viewer {
   /** Clean up event listeners and DOM elements */
   destroy(): void;
 
-  /** Update the command layers and re-render */
-  setCommandLayers(layers: CommandLayer[]): void;
-
-  /** Update the custom layers and re-render */
-  setCustomLayers(layers: CustomLayer[]): void;
+  /** Update the layers and re-render */
+  setLayers(layers: ViewerLayer[]): void;
 
   /** Get the current view transform state */
   getTransform(): { scale: number; tx: number; ty: number };
@@ -95,9 +120,10 @@ const DEFAULT_CHECKERBOARD =
 /**
  * Create a pan-zoom viewer inside a container element.
  *
- * The viewer creates stacked canvas elements for each command layer
- * and custom layer, all sharing the same pan/zoom transform. Mouse
- * wheel zooms anchored at the cursor, and mouse drag pans the view.
+ * The viewer creates stacked canvas elements for each layer, all sharing
+ * the same pan/zoom transform. Command layers and custom layers can be
+ * freely interleaved. Mouse wheel zooms anchored at the cursor, and
+ * mouse drag pans the view.
  *
  * @example
  * ```ts
@@ -105,31 +131,25 @@ const DEFAULT_CHECKERBOARD =
  * const viewer = createViewer({
  *   container: document.getElementById('viewer')!,
  *   bounds: diagram.bounds,
- *   commandLayers: diagram.layers,
+ *   layers: diagram.layers,
  * });
  *
- * // With custom overlay layer
+ * // With interleaved custom layer
  * const viewer = createViewer({
  *   container: document.getElementById('viewer')!,
  *   bounds: diagram.bounds,
- *   commandLayers: diagram.layers,
- *   background: '#2a2a2a',
- *   customLayers: [{
- *     render: (ctx, scale) => {
- *       ctx.beginPath();
- *       ctx.arc(0, 0, 5, 0, Math.PI * 2);
- *       ctx.fillStyle = 'red';
- *       ctx.fill();
- *     }
- *   }],
+ *   layers: [
+ *     diagram.layers[0],
+ *     { render: (ctx, scale) => { ctx.fillStyle = 'red'; ctx.fillRect(0, 0, 10, 10); } },
+ *     diagram.layers[1],
+ *   ],
  * });
  * ```
  */
 export function createViewer(options: ViewerOptions): Viewer {
   const { container, bounds, padding = 0.9 } = options;
 
-  let commandLayers = options.commandLayers ?? [];
-  let customLayers = options.customLayers ?? [];
+  let layers: ViewerLayer[] = options.layers ?? [];
 
   // Apply background
   if (options.background !== null) {
@@ -195,11 +215,10 @@ export function createViewer(options: ViewerOptions): Viewer {
     const pw = w * pr;
     const ph = h * pr;
 
-    const totalLayers = commandLayers.length + customLayers.length;
-    ensureCanvasCount(totalLayers);
+    ensureCanvasCount(layers.length);
 
-    // Render command layers
-    for (let i = 0; i < commandLayers.length; i++) {
+    for (let i = 0; i < layers.length; i++) {
+      const layer = layers[i];
       const c = canvases[i];
       c.width = pw;
       c.height = ph;
@@ -210,25 +229,23 @@ export function createViewer(options: ViewerOptions): Viewer {
       ctx.clearRect(0, 0, w, h);
       ctx.save();
       ctx.transform(scale, 0, 0, -scale, tx, ty);
-      executeCommands(ctx, commandLayers[i].commands, scale);
+      if (hasCommands(layer)) {
+        executeCommands(ctx, layer.commands, scale);
+      } else {
+        layer.render(ctx, scale);
+      }
       ctx.restore();
-    }
 
-    // Render custom layers
-    for (let i = 0; i < customLayers.length; i++) {
-      const canvasIdx = commandLayers.length + i;
-      const c = canvases[canvasIdx];
-      c.width = pw;
-      c.height = ph;
-      c.style.width = w + "px";
-      c.style.height = h + "px";
-      const ctx = c.getContext("2d")!;
-      ctx.setTransform(pr, 0, 0, pr, 0, 0);
-      ctx.clearRect(0, 0, w, h);
-      ctx.save();
-      ctx.transform(scale, 0, 0, -scale, tx, ty);
-      customLayers[i].render(ctx, scale);
-      ctx.restore();
+      // Tint MaskLayers: replace opaque pixels with the layer color
+      if (isMaskLayer(layer)) {
+        const [r, g, b, a] = layer.color;
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalCompositeOperation = "source-in";
+        ctx.fillStyle = `rgba(${r},${g},${b},${a})`;
+        ctx.fillRect(0, 0, pw, ph);
+        ctx.restore();
+      }
     }
   }
 
@@ -299,13 +316,8 @@ export function createViewer(options: ViewerOptions): Viewer {
       canvases = [];
     },
 
-    setCommandLayers(layers: CommandLayer[]): void {
-      commandLayers = layers;
-      render();
-    },
-
-    setCustomLayers(layers: CustomLayer[]): void {
-      customLayers = layers;
+    setLayers(newLayers: ViewerLayer[]): void {
+      layers = newLayers;
       render();
     },
 
