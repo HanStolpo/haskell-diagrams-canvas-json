@@ -4,6 +4,7 @@ import { executeCommands } from "./renderer.js";
 /** A layer with pre-colored canvas commands rendered as-is */
 export interface CommandLayer {
   name?: string;
+  visible?: boolean;
   commands: CanvasCommand[];
 }
 
@@ -15,6 +16,7 @@ export interface CommandLayer {
  */
 export interface MaskLayer {
   name?: string;
+  visible?: boolean;
   color: [number, number, number, number];
   commands: CanvasCommand[];
 }
@@ -43,6 +45,7 @@ export type CustomLayerRenderer = (
 /** Configuration for a custom canvas layer */
 export interface CustomLayer {
   name?: string;
+  visible?: boolean;
   /** Render callback invoked each frame */
   render: CustomLayerRenderer;
 }
@@ -220,6 +223,11 @@ export function createViewer(options: ViewerOptions): Viewer {
     for (let i = 0; i < layers.length; i++) {
       const layer = layers[i];
       const c = canvases[i];
+      if (layer.visible === false) {
+        c.style.display = "none";
+        continue;
+      }
+      c.style.display = "";
       c.width = pw;
       c.height = ph;
       c.style.width = w + "px";

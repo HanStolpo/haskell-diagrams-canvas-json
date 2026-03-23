@@ -383,7 +383,15 @@ export async function createPixiViewer(
     const pw = Math.round(cw * pr);
     const ph = Math.round(ch * pr);
 
-    for (const ls of layerStates) {
+    for (let i = 0; i < layerStates.length; i++) {
+      const ls = layerStates[i];
+      const hidden = layers[i]?.visible === false;
+      ls.sprite.visible = !hidden;
+      if (ls.kind === "mask" && ls.clipSprite) {
+        ls.clipSprite.visible = !hidden;
+      }
+      if (hidden) continue;
+
       if (ls.kind === "command") {
         applyViewTransform(ls.scene);
         app.renderer.render({
