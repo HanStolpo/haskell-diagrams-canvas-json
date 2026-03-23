@@ -401,6 +401,13 @@ export async function createPixiViewer(
           clearColor: [0, 0, 0, 0],
         });
       } else if (ls.kind === "mask") {
+        // Re-read color from the layer in case it was mutated
+        const maskLayer = layers[i];
+        if (maskLayer && isMaskLayer(maskLayer)) {
+          const [r, g, b, a] = maskLayer.color;
+          ls.sprite.tint = rgbaToHex(r, g, b);
+          ls.sprite.alpha = a;
+        }
         applyViewTransform(ls.scene);
         app.renderer.render({
           container: ls.scene,
@@ -514,8 +521,22 @@ export async function createPixiViewer(
     },
 
     setLayers(newLayers: ViewerLayer[]): void {
+      const needsRebuild =
+        newLayers.length !== layers.length ||
+        newLayers.some((l, i) => {
+          const old = layers[i];
+          if (isMaskLayer(l) !== isMaskLayer(old)) return true;
+          if (isCustomLayer(l) !== isCustomLayer(old)) return true;
+          // Mask layers: rebuild if commands changed (color changes are handled in renderFull)
+          if (isMaskLayer(l) && isMaskLayer(old) && l.commands !== old.commands)
+            return true;
+          // Custom layers: render callback may have changed, no rebuild needed
+          return false;
+        });
       layers = newLayers;
-      rebuildLayers();
+      if (needsRebuild) {
+        rebuildLayers();
+      }
       renderFull();
     },
 
