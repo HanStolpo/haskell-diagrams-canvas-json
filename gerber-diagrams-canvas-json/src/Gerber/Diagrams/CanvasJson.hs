@@ -504,7 +504,9 @@ instance FromJSON OutlineMode where
 
 -- | Specification for a single layer in a board composition.
 data BoardLayerSpec = BoardLayerSpec
-    { blsColor :: !(Double, Double, Double, Double)
+    { blsName :: !(Maybe Text)
+    -- ^ Optional human-readable layer name
+    , blsColor :: !(Double, Double, Double, Double)
     -- ^ Layer colour RGBA (0-255 RGB, 0-1 alpha)
     , blsBase :: !FilePath
     -- ^ Base gerber file
@@ -515,12 +517,14 @@ data BoardLayerSpec = BoardLayerSpec
 
 instance FromJSON BoardLayerSpec where
     parseJSON = A.withObject "BoardLayerSpec" $ \o -> do
+        name <- o .:? "name"
         [r, g, b, a] <- o .: "color"
         base <- o .: "base"
         mode <- o .: "outlineMode"
         pure
             BoardLayerSpec
-                { blsColor = (r, g, b, a)
+                { blsName = name
+                , blsColor = (r, g, b, a)
                 , blsBase = base
                 , blsOutlineMode = mode
                 }
@@ -563,7 +567,9 @@ instance FromJSON BoardSpec where
 
 -- | A single colored layer in the output.
 data ColoredLayer = ColoredLayer
-    { clColor :: !(Double, Double, Double, Double)
+    { clName :: !(Maybe Text)
+    -- ^ Optional human-readable layer name
+    , clColor :: !(Double, Double, Double, Double)
     , clCommands :: ![CanvasCmd]
     }
     deriving (Show, Eq)
@@ -574,10 +580,14 @@ encodeColoredLayer jp cl =
     let (r, g, b, a) = clColor cl
         col = roundN 0
         al = roundN (jpAlpha jp)
-     in A.object
+        base =
             [ "color" A..= [col r, col g, col b, al a]
             , "commands" A..= map (encodeCmd jp) (clCommands cl)
             ]
+        nameField = case clName cl of
+            Nothing -> []
+            Just n -> ["name" A..= n]
+     in A.object (nameField ++ base)
 
 -- | Encode using 'defaultJsonPrecision'.
 instance ToJSON ColoredLayer where
@@ -703,7 +713,8 @@ buildBoardDiagram outline throughs mPrepegColor mBaseColor entries =
         Nothing -> []
         Just color ->
             [ ColoredLayer
-                { clColor = color
+                { clName = Just "prepreg"
+                , clColor = color
                 , clCommands = filledOutlineWithHoles color
                 }
             ]
@@ -712,14 +723,16 @@ buildBoardDiagram outline throughs mPrepegColor mBaseColor entries =
         Nothing -> []
         Just color ->
             [ ColoredLayer
-                { clColor = color
+                { clName = Just "substrate"
+                , clColor = color
                 , clCommands = filledOutlineWithHoles color
                 }
             ]
 
     buildOne (spec, base) =
         ColoredLayer
-            { clColor = blsColor spec
+            { clName = blsName spec
+            , clColor = blsColor spec
             , clCommands = buildBoardLayerCommands (blsColor spec) (blsOutlineMode spec) base outline throughs
             }
 

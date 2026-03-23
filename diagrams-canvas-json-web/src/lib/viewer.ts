@@ -3,6 +3,7 @@ import { executeCommands } from "./renderer.js";
 
 /** A layer with pre-colored canvas commands */
 export interface CommandLayer {
+  name?: string;
   color: [number, number, number, number];
   commands: CanvasCommand[];
 }
