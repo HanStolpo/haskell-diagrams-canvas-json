@@ -103,6 +103,8 @@ data Command
     | BoardViewPixi !FilePath !Int
     | GridView ![FilePath] !Int
     | GridViewPixi ![FilePath] !Int
+    | StackView ![FilePath] !Int
+    | StackViewPixi ![FilePath] !Int
 
 commandParser :: ParserInfo Command
 commandParser =
@@ -128,6 +130,8 @@ commandParser =
                 <> command "board-view-pixi" (info boardViewPixiCmd (progDesc "View board rendering using PixiJS WebGL viewer"))
                 <> command "grid-view" (info gridViewCmd (progDesc "View multiple gerber layers in an NxM grid"))
                 <> command "grid-view-pixi" (info gridViewPixiCmd (progDesc "View multiple gerber layers in an NxM grid using PixiJS"))
+                <> command "stack-view" (info stackViewCmd (progDesc "View stacked gerber layers with toggleable legend"))
+                <> command "stack-view-pixi" (info stackViewPixiCmd (progDesc "View stacked gerber layers with toggleable legend using PixiJS"))
             )
 
     toJsonCmd =
@@ -201,6 +205,16 @@ commandParser =
             <$> some (argument str (metavar "GERBER_FILES..." <> help "Gerber files to display in grid"))
             <*> portOpt
 
+    stackViewCmd =
+        StackView
+            <$> some (argument str (metavar "GERBER_FILES..." <> help "Gerber files to stack"))
+            <*> portOpt
+
+    stackViewPixiCmd =
+        StackViewPixi
+            <$> some (argument str (metavar "GERBER_FILES..." <> help "Gerber files to stack"))
+            <*> portOpt
+
     portOpt = option auto (long "port" <> short 'p' <> value 3000 <> metavar "PORT" <> help "Port to serve on (default: 3000)")
     outlineFlag = switch (long "outline" <> help "Treat base layer as an outline (fill the path instead of stroking)")
 
@@ -222,6 +236,8 @@ main = do
         BoardViewPixi specPath port -> runBoardViewPixi specPath port
         GridView files port -> runGridView files port
         GridViewPixi files port -> runGridViewPixi files port
+        StackView files port -> runStackView files port
+        StackViewPixi files port -> runStackViewPixi files port
 
 runToJson :: FilePath -> IO ()
 runToJson filePath = do
@@ -863,5 +879,301 @@ gridLayoutJs createCall =
         , "    container: document.getElementById('wrap'),"
         , "    bounds: bounds,"
         , "    layers: layers,"
+        , "  });"
+        ]
+
+--------------------------------------------------------------------------------
+-- Stack view
+--------------------------------------------------------------------------------
+
+runStackView :: [FilePath] -> Int -> IO ()
+runStackView files port = do
+    layers <- loadGridLayers files
+    let jsonBytes = encodeGridLayers layers
+    jsBundle <- readJsBundle
+    putStrLn $ "Serving stack viewer at http://localhost:" <> show port
+    scotty port $ do
+        get "/" $ do
+            setHeader "Content-Type" "text/html; charset=utf-8"
+            raw . BL.fromStrict . TE.encodeUtf8 $ stackViewerHtml False
+
+        get "/api/gerber/json" $ do
+            setHeader "Content-Type" "application/json"
+            raw jsonBytes
+
+        get "/lib/diagrams-canvas-json-web.js" $ do
+            setHeader "Content-Type" "application/javascript"
+            raw jsBundle
+
+runStackViewPixi :: [FilePath] -> Int -> IO ()
+runStackViewPixi files port = do
+    layers <- loadGridLayers files
+    let jsonBytes = encodeGridLayers layers
+    pixiBundle <- readPixiJsBundle
+    putStrLn $ "Serving PixiJS stack viewer at http://localhost:" <> show port
+    scotty port $ do
+        get "/" $ do
+            setHeader "Content-Type" "text/html; charset=utf-8"
+            raw . BL.fromStrict . TE.encodeUtf8 $ stackViewerHtml True
+
+        get "/api/gerber/json" $ do
+            setHeader "Content-Type" "application/json"
+            raw jsonBytes
+
+        get "/lib/diagrams-canvas-json-web-pixi.js" $ do
+            setHeader "Content-Type" "application/javascript"
+            raw pixiBundle
+
+stackViewerHtml :: Bool -> T.Text
+stackViewerHtml isPixi =
+    let (libScript, createCall) =
+            if isPixi
+                then
+                    ( "/lib/diagrams-canvas-json-web-pixi.js"
+                    , "await DiagramsCanvasJsonPixi.createPixiViewer"
+                    )
+                else
+                    ( "/lib/diagrams-canvas-json-web.js"
+                    , "DiagramsCanvasJson.createViewer"
+                    )
+        suffix = if isPixi then " (PixiJS)" else ""
+     in T.unlines
+            [ "<!DOCTYPE html>"
+            , "<html><head>"
+            , "<meta charset=\"utf-8\">"
+            , "<title>Gerber Stack Viewer" <> suffix <> "</title>"
+            , "<style>"
+            , viewerCss
+            , "</style>"
+            , "</head><body>"
+            , "<h1>Gerber Stack" <> suffix <> "</h1>"
+            , "<div id=\"wrap\"></div>"
+            , "<div id=\"error\"></div>"
+            , "<script src=\"" <> libScript <> "\"></script>"
+            , "<script>"
+            , "async function main() {"
+            , "  const resp = await fetch('/api/gerber/json');"
+            , "  if (!resp.ok) throw new Error('HTTP ' + resp.status);"
+            , "  const data = await resp.json();"
+            , stackLayoutJs createCall
+            , "}"
+            , "main().catch(e => {"
+            , "  document.getElementById('error').textContent = 'Error: ' + e.message;"
+            , "});"
+            , "</script>"
+            , "</body></html>"
+            ]
+
+stackLayoutJs :: T.Text -> T.Text
+stackLayoutJs createCall =
+    T.unlines
+        [ "  var n = data.length;"
+        , "  if (n === 0) return;"
+        , ""
+        , "  // Distinct colors for layers (HSL wheel)"
+        , "  var colors = [];"
+        , "  for (var i = 0; i < n; i++) {"
+        , "    var hue = (i * 360 / n) % 360;"
+        , "    var rad = hue * Math.PI / 180;"
+        , "    // Convert HSL(hue, 80%, 45%) to RGB 0-255"
+        , "    var s = 0.8, l = 0.45;"
+        , "    var c = (1 - Math.abs(2 * l - 1)) * s;"
+        , "    var x = c * (1 - Math.abs((hue / 60) % 2 - 1));"
+        , "    var m = l - c / 2;"
+        , "    var r1, g1, b1;"
+        , "    if (hue < 60) { r1=c; g1=x; b1=0; }"
+        , "    else if (hue < 120) { r1=x; g1=c; b1=0; }"
+        , "    else if (hue < 180) { r1=0; g1=c; b1=x; }"
+        , "    else if (hue < 240) { r1=0; g1=x; b1=c; }"
+        , "    else if (hue < 300) { r1=x; g1=0; b1=c; }"
+        , "    else { r1=c; g1=0; b1=x; }"
+        , "    colors.push(["
+        , "      Math.round((r1 + m) * 255),"
+        , "      Math.round((g1 + m) * 255),"
+        , "      Math.round((b1 + m) * 255), 0.7]);"
+        , "  }"
+        , ""
+        , "  // Union of all bounds"
+        , "  var ub = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };"
+        , "  for (var i = 0; i < n; i++) {"
+        , "    var b = data[i].bounds;"
+        , "    ub.minX = Math.min(ub.minX, b.minX);"
+        , "    ub.minY = Math.min(ub.minY, b.minY);"
+        , "    ub.maxX = Math.max(ub.maxX, b.maxX);"
+        , "    ub.maxY = Math.max(ub.maxY, b.maxY);"
+        , "  }"
+        , "  var contentW = ub.maxX - ub.minX;"
+        , "  var contentH = ub.maxY - ub.minY;"
+        , ""
+        , "  // Legend layout to the left of the content"
+        , "  var legendItemH = contentH * 0.04;"
+        , "  var legendGap = legendItemH * 0.3;"
+        , "  var legendW = contentW * 0.25;"
+        , "  var legendPad = contentW * 0.03;"
+        , "  var legendX = ub.minX - legendW - legendPad;"
+        , "  // Space for show/hide buttons above legend items"
+        , "  var btnH = legendItemH;"
+        , "  var btnGap = legendGap;"
+        , "  var btnRowH = btnH + btnGap * 2;"
+        , "  // Center legend + buttons vertically"
+        , "  var legendTotalH = n * legendItemH + (n - 1) * legendGap + btnRowH;"
+        , "  var legendTopY = ub.minY + contentH / 2 + legendTotalH / 2;"
+        , ""
+        , "  // Build layers array and legend metadata"
+        , "  var layers = [];"
+        , "  var maskLayers = []; // references to the MaskLayer objects"
+        , "  var legendItems = [];"
+        , ""
+        , "  // White background behind the gerber stack"
+        , "  var pad = contentW * 0.02;"
+        , "  layers.push({"
+        , "    commands: ["
+        , "      ['B'], ['M', ub.minX - pad, ub.minY - pad],"
+        , "      ['L', ub.maxX + pad, ub.minY - pad],"
+        , "      ['L', ub.maxX + pad, ub.maxY + pad],"
+        , "      ['L', ub.minX - pad, ub.maxY + pad],"
+        , "      ['Z'], ['F', 255, 255, 255, 1]"
+        , "    ]"
+        , "  });"
+        , ""
+        , "  for (var i = 0; i < n; i++) {"
+        , "    var ml = {"
+        , "      name: data[i].name,"
+        , "      color: colors[i],"
+        , "      commands: data[i].commands"
+        , "    };"
+        , "    layers.push(ml);"
+        , "    maskLayers.push(ml);"
+        , ""
+        , "    var iy = legendTopY - btnRowH - i * (legendItemH + legendGap);"
+        , "    legendItems.push({"
+        , "      text: data[i].name,"
+        , "      color: colors[i],"
+        , "      x: legendX,"
+        , "      y: iy,"
+        , "      w: legendW,"
+        , "      h: legendItemH,"
+        , "      index: i"
+        , "    });"
+        , "  }"
+        , ""
+        , "  // Button positions (Y-up, at the top of the legend)"
+        , "  var btnY = legendTopY;"
+        , "  var btnW = (legendW - btnGap) / 2;"
+        , "  var showAllBtn = { x: legendX, y: btnY, w: btnW, h: btnH };"
+        , "  var hideAllBtn = { x: legendX + btnW + btnGap, y: btnY, w: btnW, h: btnH };"
+        , ""
+        , "  // Legend (CustomLayer)"
+        , "  var fontSize = legendItemH * 0.65;"
+        , "  var checkSize = legendItemH * 0.5;"
+        , "  var btnFontSize = btnH * 0.55;"
+        , "  layers.push({"
+        , "    render: function(ctx, scale) {"
+        , "      // Show All / Hide All buttons"
+        , "      function drawBtn(btn, label) {"
+        , "        ctx.save();"
+        , "        ctx.translate(btn.x, btn.y);"
+        , "        ctx.scale(1, -1);"
+        , "        ctx.fillStyle = '#e8e8e8';"
+        , "        ctx.fillRect(0, 0, btn.w, btn.h);"
+        , "        ctx.strokeStyle = '#bbb';"
+        , "        ctx.lineWidth = btn.h * 0.04;"
+        , "        ctx.strokeRect(0, 0, btn.w, btn.h);"
+        , "        ctx.fillStyle = '#333';"
+        , "        ctx.font = btnFontSize + 'px system-ui, sans-serif';"
+        , "        ctx.textAlign = 'center';"
+        , "        ctx.textBaseline = 'middle';"
+        , "        ctx.fillText(label, btn.w / 2, btn.h / 2);"
+        , "        ctx.restore();"
+        , "      }"
+        , "      drawBtn(showAllBtn, 'Show All');"
+        , "      drawBtn(hideAllBtn, 'Hide All');"
+        , ""
+        , "      for (var i = 0; i < legendItems.length; i++) {"
+        , "        var it = legendItems[i];"
+        , "        var vis = maskLayers[it.index].visible !== false;"
+        , "        ctx.save();"
+        , "        ctx.translate(it.x, it.y);"
+        , "        ctx.scale(1, -1);"
+        , ""
+        , "        // Color swatch"
+        , "        var c = it.color;"
+        , "        ctx.fillStyle = 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + c[3] + ')';"
+        , "        ctx.fillRect(0, 0, checkSize, checkSize);"
+        , ""
+        , "        // Check mark if visible"
+        , "        if (vis) {"
+        , "          ctx.strokeStyle = '#fff';"
+        , "          ctx.lineWidth = checkSize * 0.15;"
+        , "          ctx.lineCap = 'round';"
+        , "          ctx.beginPath();"
+        , "          ctx.moveTo(checkSize * 0.2, checkSize * 0.5);"
+        , "          ctx.lineTo(checkSize * 0.45, checkSize * 0.75);"
+        , "          ctx.lineTo(checkSize * 0.8, checkSize * 0.25);"
+        , "          ctx.stroke();"
+        , "        }"
+        , ""
+        , "        // Layer name"
+        , "        ctx.fillStyle = vis ? '#333' : '#aaa';"
+        , "        ctx.font = fontSize + 'px system-ui, sans-serif';"
+        , "        ctx.textAlign = 'left';"
+        , "        ctx.textBaseline = 'middle';"
+        , "        ctx.fillText(it.text, checkSize + checkSize * 0.4, checkSize / 2);"
+        , ""
+        , "        ctx.restore();"
+        , "      }"
+        , "    }"
+        , "  });"
+        , ""
+        , "  // Bounds: include legend area and buttons"
+        , "  var bounds = {"
+        , "    minX: legendX - legendPad,"
+        , "    minY: Math.min(ub.minY - pad, legendTopY - legendTotalH - legendPad),"
+        , "    maxX: ub.maxX + pad,"
+        , "    maxY: Math.max(ub.maxY + pad, legendTopY + legendPad)"
+        , "  };"
+        , ""
+        , "  var viewer = " <> createCall <> "({"
+        , "    container: document.getElementById('wrap'),"
+        , "    bounds: bounds,"
+        , "    layers: layers,"
+        , "  });"
+        , ""
+        , "  // Click handler for legend toggle"
+        , "  document.getElementById('wrap').addEventListener('click', function(e) {"
+        , "    var rect = e.currentTarget.getBoundingClientRect();"
+        , "    var t = viewer.getTransform ? viewer.getTransform() : (viewer.then ? null : null);"
+        , "    if (!t) return;"
+        , "    // Convert click from CSS pixels to diagram space"
+        , "    var dx = (e.clientX - rect.left - t.tx) / t.scale;"
+        , "    var dy = -((e.clientY - rect.top - t.ty) / t.scale);"
+        , ""
+        , "    // Hit test: Show All / Hide All buttons"
+        , "    function hitBtn(btn) {"
+        , "      return dx >= btn.x && dx <= btn.x + btn.w &&"
+        , "             dy <= btn.y && dy >= btn.y - btn.h;"
+        , "    }"
+        , "    if (hitBtn(showAllBtn)) {"
+        , "      for (var j = 0; j < maskLayers.length; j++) maskLayers[j].visible = true;"
+        , "      viewer.render();"
+        , "      return;"
+        , "    }"
+        , "    if (hitBtn(hideAllBtn)) {"
+        , "      for (var j = 0; j < maskLayers.length; j++) maskLayers[j].visible = false;"
+        , "      viewer.render();"
+        , "      return;"
+        , "    }"
+        , ""
+        , "    // Hit test: legend items"
+        , "    for (var i = 0; i < legendItems.length; i++) {"
+        , "      var it = legendItems[i];"
+        , "      if (dx >= it.x && dx <= it.x + it.w &&"
+        , "          dy <= it.y && dy >= it.y - it.h) {"
+        , "        var ml = maskLayers[it.index];"
+        , "        ml.visible = ml.visible === false ? true : false;"
+        , "        viewer.render();"
+        , "        break;"
+        , "      }"
+        , "    }"
         , "  });"
         ]
