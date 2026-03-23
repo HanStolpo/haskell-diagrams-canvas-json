@@ -30,6 +30,7 @@ module Gerber.Diagrams.CanvasJson (
     buildBoardLayerCommands,
     buildBoardDiagram,
     recolorCommands,
+    syntheticOutline,
 
     -- * Gerber precision
     applyGerberPrecision,
@@ -536,8 +537,10 @@ applied to every layer. Each layer specifies only its colour, base gerber,
 and how the outline interacts with it.
 -}
 data BoardSpec = BoardSpec
-    { bsOutline :: !FilePath
-    -- ^ Board outline gerber (required)
+    { bsOutline :: !(Maybe FilePath)
+    {- ^ Board outline gerber. When 'Nothing', the outline is synthesized
+    from the bounding box of all layers.
+    -}
     , bsThroughLayers :: ![FilePath]
     -- ^ Gerber files that punch through all layers (drills, cutouts)
     , bsBaseColor :: !(Maybe (Double, Double, Double, Double))
@@ -549,7 +552,7 @@ data BoardSpec = BoardSpec
 
 instance FromJSON BoardSpec where
     parseJSON = A.withObject "BoardSpec" $ \o -> do
-        outline <- o .: "outline"
+        outline <- o .:? "outline"
         through <- o .:? "throughLayers" .!= []
         baseColor <- o .:? "baseColor"
         layers <- o .: "layers"
@@ -664,6 +667,41 @@ recolorCommands (cr, cg, cb, ca) = map rc
     rc CmdSetFillColor{} = CmdSetFillColor cr cg cb ca
     rc (CmdSetStrokeColor _ _ _ _ lw) = CmdSetStrokeColor cr cg cb ca lw
     rc cmd = cmd
+
+{- | Create a synthetic outline 'CanvasDiagram' from the union bounding box
+of a list of diagrams. The outline is a simple filled rectangle matching
+the union bounds. Use this when no outline gerber is available to derive
+the board shape from the layer extents.
+-}
+syntheticOutline :: [CanvasDiagram] -> CanvasDiagram
+syntheticOutline [] =
+    CanvasDiagram
+        { cdWidth = 0
+        , cdHeight = 0
+        , cdBounds = BBox 0 0 0 0
+        , cdCommands = []
+        , cdPrecision = defaultJsonPrecision
+        }
+syntheticOutline diagrams@(d : _) =
+    let bounds = foldl1 unionBBox (map cdBounds diagrams)
+        w = bbMaxX bounds - bbMinX bounds
+        h = bbMaxY bounds - bbMinY bounds
+        cmds =
+            [ CmdBeginPath
+            , CmdMoveTo (bbMinX bounds) (bbMinY bounds)
+            , CmdLineTo (bbMaxX bounds) (bbMinY bounds)
+            , CmdLineTo (bbMaxX bounds) (bbMaxY bounds)
+            , CmdLineTo (bbMinX bounds) (bbMaxY bounds)
+            , CmdClosePath
+            , CmdFill 0 0 0 1
+            ]
+     in CanvasDiagram
+            { cdWidth = w
+            , cdHeight = h
+            , cdBounds = bounds
+            , cdCommands = cmds
+            , cdPrecision = cdPrecision d
+            }
 
 {- | Assemble a board diagram from shared outline, through-layers, an
 optional base colour, and per-layer specs paired with their pre-rendered

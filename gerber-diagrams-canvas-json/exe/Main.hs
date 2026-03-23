@@ -21,6 +21,7 @@ import Gerber.Diagrams.CanvasJson (
     renderGerber,
     renderGerberOutline,
     renderGerberRaw,
+    syntheticOutline,
  )
 import Options.Applicative
 import System.Environment (lookupEnv)
@@ -453,9 +454,9 @@ loadBoard specPath = do
             let specDir = takeDirectory specPath
                 -- Collect all unique file paths
                 allPaths =
-                    bsOutline spec
-                        : bsThroughLayers spec
-                        ++ map blsBase (bsLayers spec)
+                    maybe id (:) (bsOutline spec) $
+                        bsThroughLayers spec
+                            ++ map blsBase (bsLayers spec)
                 uniquePaths = Map.fromList [(p, specDir </> p) | p <- allPaths]
             -- Render all gerber files
             rendered <- mapM renderFile (Map.toList uniquePaths)
@@ -466,9 +467,12 @@ loadBoard specPath = do
                         lookupFile p = case Map.lookup p fileMap of
                             Just d -> d
                             Nothing -> error $ "impossible: missing " <> p
-                        outlineDiagram = lookupFile (bsOutline spec)
+                        layerDiagrams = map (lookupFile . blsBase) (bsLayers spec)
+                        outlineDiagram = case bsOutline spec of
+                            Just p -> lookupFile p
+                            Nothing -> syntheticOutline layerDiagrams
                         throughDiagrams = map lookupFile (bsThroughLayers spec)
-                        entries = [(l, lookupFile (blsBase l)) | l <- bsLayers spec]
+                        entries = zip (bsLayers spec) layerDiagrams
                     return (Right (buildBoardDiagram outlineDiagram throughDiagrams (bsBaseColor spec) entries))
   where
     renderFile :: (FilePath, FilePath) -> IO (Either String (FilePath, CanvasDiagram))
