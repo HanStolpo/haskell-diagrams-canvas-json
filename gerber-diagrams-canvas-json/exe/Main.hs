@@ -9,7 +9,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as T
-import Diagrams.Backend.CanvasJson (CanvasDiagram)
+import Diagrams.Backend.CanvasJson (CanvasDiagram (..), encodeBBox, encodeCmd)
 import Gerber.Diagrams.CanvasJson (
     BoardLayerSpec (..),
     BoardSpec (..),
@@ -25,7 +25,7 @@ import Gerber.Diagrams.CanvasJson (
 import Options.Applicative
 import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.IO (hPutStrLn, stderr)
 import Web.Scotty (get, raw, scotty, setHeader)
 
@@ -101,6 +101,8 @@ data Command
     | BoardView !FilePath !Int
     | ViewPixi !FilePath !Int
     | BoardViewPixi !FilePath !Int
+    | GridView ![FilePath] !Int
+    | GridViewPixi ![FilePath] !Int
 
 commandParser :: ParserInfo Command
 commandParser =
@@ -124,6 +126,8 @@ commandParser =
                 <> command "board-view" (info boardViewCmd (progDesc "View board rendering from gerber layers in the browser"))
                 <> command "view-pixi" (info viewPixiCmd (progDesc "View a gerber file using PixiJS WebGL viewer"))
                 <> command "board-view-pixi" (info boardViewPixiCmd (progDesc "View board rendering using PixiJS WebGL viewer"))
+                <> command "grid-view" (info gridViewCmd (progDesc "View multiple gerber layers in an NxM grid"))
+                <> command "grid-view-pixi" (info gridViewPixiCmd (progDesc "View multiple gerber layers in an NxM grid using PixiJS"))
             )
 
     toJsonCmd =
@@ -187,6 +191,16 @@ commandParser =
             <$> argument str (metavar "SPEC_FILE" <> help "Path to JSON board spec file")
             <*> portOpt
 
+    gridViewCmd =
+        GridView
+            <$> some (argument str (metavar "GERBER_FILES..." <> help "Gerber files to display in grid"))
+            <*> portOpt
+
+    gridViewPixiCmd =
+        GridViewPixi
+            <$> some (argument str (metavar "GERBER_FILES..." <> help "Gerber files to display in grid"))
+            <*> portOpt
+
     portOpt = option auto (long "port" <> short 'p' <> value 3000 <> metavar "PORT" <> help "Port to serve on (default: 3000)")
     outlineFlag = switch (long "outline" <> help "Treat base layer as an outline (fill the path instead of stroking)")
 
@@ -206,6 +220,8 @@ main = do
         BoardView specPath port -> runBoardView specPath port
         ViewPixi filePath port -> runViewPixi filePath port
         BoardViewPixi specPath port -> runBoardViewPixi specPath port
+        GridView files port -> runGridView files port
+        GridViewPixi files port -> runGridViewPixi files port
 
 runToJson :: FilePath -> IO ()
 runToJson filePath = do
@@ -628,4 +644,224 @@ boardViewerPixiHtml name =
         , "});"
         , "</script>"
         , "</body></html>"
+        ]
+
+--------------------------------------------------------------------------------
+-- Grid view
+--------------------------------------------------------------------------------
+
+runGridView :: [FilePath] -> Int -> IO ()
+runGridView files port = do
+    layers <- loadGridLayers files
+    serveGridViewer layers port
+
+runGridViewPixi :: [FilePath] -> Int -> IO ()
+runGridViewPixi files port = do
+    layers <- loadGridLayers files
+    serveGridViewerPixi layers port
+
+-- | Read and render each gerber file, returning named diagrams.
+loadGridLayers :: [FilePath] -> IO [(T.Text, CanvasDiagram)]
+loadGridLayers files = do
+    results <- mapM renderOne files
+    case sequence results of
+        Left err -> do
+            hPutStrLn stderr $ "Error: " <> err
+            exitFailure
+        Right layers -> pure layers
+  where
+    renderOne fp = do
+        result <- try (T.readFile fp) :: IO (Either SomeException T.Text)
+        case result of
+            Left exc -> pure . Left $ "Failed to read " <> fp <> ": " <> show exc
+            Right src ->
+                case renderGerber defaultRenderOptions src of
+                    Left err -> pure . Left $ "Failed to parse " <> fp <> ": " <> err
+                    Right cd -> pure . Right $ (T.pack (takeFileName fp), cd)
+
+-- | Encode grid layers as a JSON array of {name, bounds, commands}.
+encodeGridLayers :: [(T.Text, CanvasDiagram)] -> BL.ByteString
+encodeGridLayers layers = Aeson.encode $ map encodeOne layers
+  where
+    encodeOne (name, cd) =
+        let jp = cdPrecision cd
+         in Aeson.object
+                [ "name" Aeson..= name
+                , "bounds" Aeson..= encodeBBox jp (cdBounds cd)
+                , "commands" Aeson..= map (encodeCmd jp) (cdCommands cd)
+                ]
+
+serveGridViewer :: [(T.Text, CanvasDiagram)] -> Int -> IO ()
+serveGridViewer layers port = do
+    let jsonBytes = encodeGridLayers layers
+    jsBundle <- readJsBundle
+    putStrLn $ "Serving grid viewer at http://localhost:" <> show port
+    scotty port $ do
+        get "/" $ do
+            setHeader "Content-Type" "text/html; charset=utf-8"
+            raw . BL.fromStrict . TE.encodeUtf8 $ gridViewerHtml False
+
+        get "/api/gerber/json" $ do
+            setHeader "Content-Type" "application/json"
+            raw jsonBytes
+
+        get "/lib/diagrams-canvas-json-web.js" $ do
+            setHeader "Content-Type" "application/javascript"
+            raw jsBundle
+
+serveGridViewerPixi :: [(T.Text, CanvasDiagram)] -> Int -> IO ()
+serveGridViewerPixi layers port = do
+    let jsonBytes = encodeGridLayers layers
+    pixiBundle <- readPixiJsBundle
+    putStrLn $ "Serving PixiJS grid viewer at http://localhost:" <> show port
+    scotty port $ do
+        get "/" $ do
+            setHeader "Content-Type" "text/html; charset=utf-8"
+            raw . BL.fromStrict . TE.encodeUtf8 $ gridViewerHtml True
+
+        get "/api/gerber/json" $ do
+            setHeader "Content-Type" "application/json"
+            raw jsonBytes
+
+        get "/lib/diagrams-canvas-json-web-pixi.js" $ do
+            setHeader "Content-Type" "application/javascript"
+            raw pixiBundle
+
+gridViewerHtml :: Bool -> T.Text
+gridViewerHtml isPixi =
+    let (libScript, createCall) =
+            if isPixi
+                then
+                    ( "/lib/diagrams-canvas-json-web-pixi.js"
+                    , "await DiagramsCanvasJsonPixi.createPixiViewer"
+                    )
+                else
+                    ( "/lib/diagrams-canvas-json-web.js"
+                    , "DiagramsCanvasJson.createViewer"
+                    )
+        suffix = if isPixi then " (PixiJS)" else ""
+     in T.unlines
+            [ "<!DOCTYPE html>"
+            , "<html><head>"
+            , "<meta charset=\"utf-8\">"
+            , "<title>Gerber Grid Viewer" <> suffix <> "</title>"
+            , "<style>"
+            , viewerCss
+            , "</style>"
+            , "</head><body>"
+            , "<h1>Gerber Grid" <> suffix <> "</h1>"
+            , "<div id=\"wrap\"></div>"
+            , "<div id=\"error\"></div>"
+            , "<script src=\"" <> libScript <> "\"></script>"
+            , "<script>"
+            , "async function main() {"
+            , "  const resp = await fetch('/api/gerber/json');"
+            , "  if (!resp.ok) throw new Error('HTTP ' + resp.status);"
+            , "  const data = await resp.json();"
+            , gridLayoutJs createCall
+            , "}"
+            , "main().catch(e => {"
+            , "  document.getElementById('error').textContent = 'Error: ' + e.message;"
+            , "});"
+            , "</script>"
+            , "</body></html>"
+            ]
+
+{- | Shared JavaScript for computing the NxM grid layout and creating
+the viewer with interleaved CommandLayer / MaskLayer / CustomLayer.
+-}
+gridLayoutJs :: T.Text -> T.Text
+gridLayoutJs createCall =
+    T.unlines
+        [ "  var n = data.length;"
+        , "  if (n === 0) return;"
+        , ""
+        , "  // Find max bounds across all layers for uniform cell sizing"
+        , "  var maxW = 0, maxH = 0;"
+        , "  for (var i = 0; i < n; i++) {"
+        , "    var b = data[i].bounds;"
+        , "    maxW = Math.max(maxW, b.maxX - b.minX);"
+        , "    maxH = Math.max(maxH, b.maxY - b.minY);"
+        , "  }"
+        , ""
+        , "  // Grid dimensions"
+        , "  var cols = Math.ceil(Math.sqrt(n));"
+        , "  var rows = Math.ceil(n / cols);"
+        , ""
+        , "  // Layout constants (diagram units)"
+        , "  var pad = maxW * 0.08;"
+        , "  var titleH = maxH * 0.08;"
+        , "  var cellW = maxW + pad * 2;"
+        , "  var cellH = maxH + titleH + pad * 2;"
+        , "  var gap = maxW * 0.06;"
+        , ""
+        , "  var layers = [];"
+        , "  var labels = [];"
+        , ""
+        , "  for (var i = 0; i < n; i++) {"
+        , "    var row = Math.floor(i / cols);"
+        , "    var col = i % cols;"
+        , "    // Cell origin (bottom-left, Y-up)"
+        , "    var cx = col * (cellW + gap);"
+        , "    var cy = (rows - 1 - row) * (cellH + gap);"
+        , ""
+        , "    // White background (CommandLayer)"
+        , "    layers.push({"
+        , "      commands: ["
+        , "        ['B'], ['M', cx, cy], ['L', cx + cellW, cy],"
+        , "        ['L', cx + cellW, cy + cellH], ['L', cx, cy + cellH],"
+        , "        ['Z'], ['F', 255, 255, 255, 1]"
+        , "      ]"
+        , "    });"
+        , ""
+        , "    // Gerber content (MaskLayer, translated to cell center)"
+        , "    var b = data[i].bounds;"
+        , "    var gcx = (b.minX + b.maxX) / 2;"
+        , "    var gcy = (b.minY + b.maxY) / 2;"
+        , "    var contentCx = cx + cellW / 2;"
+        , "    var contentCy = cy + pad + (cellH - titleH - pad * 2) / 2;"
+        , "    var ox = contentCx - gcx;"
+        , "    var oy = contentCy - gcy;"
+        , ""
+        , "    layers.push({"
+        , "      color: [0, 0, 0, 1],"
+        , "      commands: [['S'], ['T', 1, 0, 0, 1, ox, oy]]"
+        , "        .concat(data[i].commands)"
+        , "        .concat([['R']])"
+        , "    });"
+        , ""
+        , "    labels.push({ text: data[i].name,"
+        , "      x: cx + cellW / 2, y: cy + cellH - pad * 0.5 });"
+        , "  }"
+        , ""
+        , "  // Title labels (CustomLayer)"
+        , "  var fontSize = titleH * 0.7;"
+        , "  layers.push({"
+        , "    render: function(ctx, scale) {"
+        , "      for (var i = 0; i < labels.length; i++) {"
+        , "        var lbl = labels[i];"
+        , "        ctx.save();"
+        , "        ctx.translate(lbl.x, lbl.y);"
+        , "        ctx.scale(1, -1);"
+        , "        ctx.font = fontSize + 'px system-ui, sans-serif';"
+        , "        ctx.textAlign = 'center';"
+        , "        ctx.textBaseline = 'top';"
+        , "        ctx.fillStyle = '#333';"
+        , "        ctx.fillText(lbl.text, 0, 0);"
+        , "        ctx.restore();"
+        , "      }"
+        , "    }"
+        , "  });"
+        , ""
+        , "  // Overall bounds"
+        , "  var totalW = cols * cellW + (cols - 1) * gap;"
+        , "  var totalH = rows * cellH + (rows - 1) * gap;"
+        , "  var bounds = { minX: -gap, minY: -gap,"
+        , "    maxX: totalW + gap, maxY: totalH + gap };"
+        , ""
+        , "  " <> createCall <> "({"
+        , "    container: document.getElementById('wrap'),"
+        , "    bounds: bounds,"
+        , "    layers: layers,"
+        , "  });"
         ]
