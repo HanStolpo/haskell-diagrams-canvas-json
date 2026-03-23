@@ -437,7 +437,7 @@ loadBoard specPath = do
                         outlineDiagram = lookupFile (bsOutline spec)
                         throughDiagrams = map lookupFile (bsThroughLayers spec)
                         entries = [(l, lookupFile (blsBase l)) | l <- bsLayers spec]
-                    return (Right (buildBoardDiagram outlineDiagram throughDiagrams (bsPrepegColor spec) (bsBaseColor spec) entries))
+                    return (Right (buildBoardDiagram outlineDiagram throughDiagrams (bsBaseColor spec) entries))
   where
     renderFile :: (FilePath, FilePath) -> IO (Either String (FilePath, CanvasDiagram))
     renderFile (key, absPath) = do

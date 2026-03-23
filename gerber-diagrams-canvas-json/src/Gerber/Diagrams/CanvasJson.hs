@@ -542,8 +542,6 @@ data BoardSpec = BoardSpec
     -- ^ Gerber files that punch through all layers (drills, cutouts)
     , bsBaseColor :: !(Maybe (Double, Double, Double, Double))
     -- ^ Optional board substrate colour (filled outline below all layers)
-    , bsPrepegColor :: !(Maybe (Double, Double, Double, Double))
-    -- ^ Optional prepreg colour (filled outline with holes, below all other layers)
     , bsLayers :: ![BoardLayerSpec]
     -- ^ Layers from bottom to top
     }
@@ -554,14 +552,12 @@ instance FromJSON BoardSpec where
         outline <- o .: "outline"
         through <- o .:? "throughLayers" .!= []
         baseColor <- o .:? "baseColor"
-        prepegColor <- o .:? "prepegColor"
         layers <- o .: "layers"
         pure
             BoardSpec
                 { bsOutline = outline
                 , bsThroughLayers = through
                 , bsBaseColor = baseColor
-                , bsPrepegColor = prepegColor
                 , bsLayers = layers
                 }
 
@@ -681,19 +677,17 @@ buildBoardDiagram ::
     CanvasDiagram ->
     -- | Through-layers (raw) — drills, cutouts
     [CanvasDiagram] ->
-    -- | Optional prepreg colour (bottom-most layer)
-    Maybe (Double, Double, Double, Double) ->
-    -- | Optional board substrate colour
+    -- | Optional board substrate colour (bottom-most layer)
     Maybe (Double, Double, Double, Double) ->
     -- | Per-layer specs paired with their base diagrams
     [(BoardLayerSpec, CanvasDiagram)] ->
     MultiLayerDiagram
-buildBoardDiagram outline throughs mPrepegColor mBaseColor entries =
+buildBoardDiagram outline throughs mBaseColor entries =
     MultiLayerDiagram
         { mldWidth = maximum allWidths
         , mldHeight = maximum allHeights
         , mldBounds = foldl1 unionBBox allBounds
-        , mldLayers = prepegLayer ++ baseLayer ++ map buildOne entries
+        , mldLayers = baseLayer ++ map buildOne entries
         , mldPrecision = cdPrecision outline
         }
   where
@@ -708,16 +702,6 @@ buildBoardDiagram outline throughs mPrepegColor mBaseColor entries =
             recolorCommands color $
                 outlineToFilled (0, 0, 0, 1) (cdCommands outline)
                     ++ concatMap (transformPolarityInverted . cdCommands) throughs
-
-    prepegLayer = case mPrepegColor of
-        Nothing -> []
-        Just color ->
-            [ ColoredLayer
-                { clName = Just "prepreg"
-                , clColor = color
-                , clCommands = filledOutlineWithHoles color
-                }
-            ]
 
     baseLayer = case mBaseColor of
         Nothing -> []
