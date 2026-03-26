@@ -297,7 +297,9 @@ export async function createPixiViewer(
     autoDensity: true,
     antialias: true,
     backgroundAlpha: 0,
+    autoStart: false, // Don't start the ticker — we render manually via renderFull()
   });
+  app.ticker.stop(); // Ensure ticker is stopped even if autoStart didn't take effect
   container.appendChild(app.canvas);
 
   // Style the pixi canvas to fill container
