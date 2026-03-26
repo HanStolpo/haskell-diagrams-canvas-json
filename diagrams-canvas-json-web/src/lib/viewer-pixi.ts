@@ -353,8 +353,11 @@ export async function createPixiViewer(
     });
   }
 
+  let destroyed = false;
+
   /** Render all layer scenes to their RenderTextures at the current transform. */
   function renderFull(): void {
+    if (destroyed) { return; }
     const cw = container.clientWidth;
     const ch = container.clientHeight;
 
@@ -510,6 +513,7 @@ export async function createPixiViewer(
     },
 
     destroy(): void {
+      destroyed = true;
       container.removeEventListener("wheel", onWheel);
       container.removeEventListener("mousedown", onMouseDown);
       window.removeEventListener("mousemove", onMouseMove);
