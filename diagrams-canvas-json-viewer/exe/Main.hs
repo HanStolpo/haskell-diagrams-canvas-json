@@ -22,7 +22,7 @@ import Web.Scotty (get, raw, scotty, setHeader)
 data Layout
     = -- | Single opaque CanvasDiagram JSON rendered as one black layer.
       LSingle
-    | -- | MultiLayerDiagram JSON (expected to have @layers@ and @bounds@).
+    | -- | LayeredDiagram JSON (expected to have @layers@ and @bounds@).
       LBoard
     | -- | Array of @{name, bounds, commands}@ rendered in an NxM grid.
       LGrid

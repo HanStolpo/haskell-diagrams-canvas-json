@@ -32,6 +32,12 @@ module Diagrams.Backend.CanvasJson (
     BBox (..),
     CompositeOp (..),
     compositeOpToText,
+    compositeOpFromText,
+
+    -- * Multi-layer diagrams
+    MaskLayer (..),
+    LayeredDiagram (..),
+    encodeMaskLayer,
 
     -- * Optimization
     optimizeCommands,
@@ -39,10 +45,12 @@ module Diagrams.Backend.CanvasJson (
 
 import Control.Monad (when)
 import Control.Monad.State.Strict
-import Data.Aeson (ToJSON (..))
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import Data.Aeson qualified as A
+import Data.Aeson.Types qualified as A
 import Data.Maybe (fromMaybe, isNothing)
 import Data.Scientific (scientific)
+import Data.Text qualified as T
 import Data.Tree (Tree (..))
 import Data.Typeable (Typeable)
 import Diagrams.Core.Compile (RNode (..), RTree, fromDTree, toDTree)
@@ -178,6 +186,18 @@ compositeOpToText SourceOver = "source-over"
 compositeOpToText DestinationOut = "destination-out"
 compositeOpToText DestinationIn = "destination-in"
 
+-- | Inverse of 'compositeOpToText'.
+compositeOpFromText :: T.Text -> Maybe CompositeOp
+compositeOpFromText "source-over" = Just SourceOver
+compositeOpFromText "destination-out" = Just DestinationOut
+compositeOpFromText "destination-in" = Just DestinationIn
+compositeOpFromText _ = Nothing
+
+instance FromJSON CompositeOp where
+    parseJSON = A.withText "CompositeOp" $ \t -> case compositeOpFromText t of
+        Just co -> pure co
+        Nothing -> fail $ "Unknown globalCompositeOperation: " <> T.unpack t
+
 -- | Encode a command as a compact JSON array using the given precision settings.
 encodeCmd :: JsonPrecision -> CanvasCmd -> A.Value
 encodeCmd jp cmd = case cmd of
@@ -219,6 +239,54 @@ encodeCmd jp cmd = case cmd of
 instance ToJSON CanvasCmd where
     toJSON = encodeCmd defaultJsonPrecision
 
+{- | Parse the compact array form emitted by 'encodeCmd'. Precision is lost
+on the round-trip (each field is a plain JSON number) but the command
+structure is preserved.
+-}
+instance FromJSON CanvasCmd where
+    parseJSON = A.withArray "CanvasCmd" $ \arr -> case toListV arr of
+        [A.String "S"] -> pure CmdSave
+        [A.String "R"] -> pure CmdRestore
+        [A.String "T", a, b, c, d, e, f] ->
+            CmdTransform <$> num a <*> num b <*> num c <*> num d <*> num e <*> num f
+        [A.String "B"] -> pure CmdBeginPath
+        [A.String "M", x, y] -> CmdMoveTo <$> num x <*> num y
+        [A.String "L", x, y] -> CmdLineTo <$> num x <*> num y
+        [A.String "C", x1, y1, x2, y2, x, y] ->
+            CmdBezierTo <$> num x1 <*> num y1 <*> num x2 <*> num y2 <*> num x <*> num y
+        [A.String "Q", cx, cy, x, y] ->
+            CmdQuadTo <$> num cx <*> num cy <*> num x <*> num y
+        [A.String "A", cx, cy, r, sa, ea] ->
+            CmdArc <$> num cx <*> num cy <*> num r <*> num sa <*> num ea
+        [A.String "Z"] -> pure CmdClosePath
+        [A.String "F", r, g, b, a] ->
+            CmdFill <$> num r <*> num g <*> num b <*> num a
+        [A.String "K", r, g, b, a, w] ->
+            CmdStroke <$> num r <*> num g <*> num b <*> num a <*> num w
+        [A.String "KV", r, g, b, a, w] ->
+            CmdStrokeView <$> num r <*> num g <*> num b <*> num a <*> num w
+        [A.String "FS", r, g, b, a] ->
+            CmdSetFillColor <$> num r <*> num g <*> num b <*> num a
+        [A.String "KS", r, g, b, a, w] ->
+            CmdSetStrokeColor <$> num r <*> num g <*> num b <*> num a <*> num w
+        [A.String "KSV", r, g, b, a, w] ->
+            CmdSetStrokeColorView <$> num r <*> num g <*> num b <*> num a <*> num w
+        [A.String "f"] -> pure CmdFillCurrent
+        [A.String "k"] -> pure CmdStrokeCurrent
+        [A.String "LC", c] -> CmdSetLineCap <$> parseJSON c
+        [A.String "LJ", j] -> CmdSetLineJoin <$> parseJSON j
+        (A.String "LD" : ds) -> CmdSetLineDash <$> traverse num ds
+        (A.String "LDV" : ds) -> CmdSetLineDashView <$> traverse num ds
+        [A.String "FT", txt, x, y] ->
+            CmdFillText <$> parseJSON txt <*> num x <*> num y
+        [A.String "SF", f] -> CmdSetFont <$> parseJSON f
+        [A.String "GCO", gco] -> CmdSetGlobalCompositeOperation <$> parseJSON gco
+        _ -> fail $ "Unrecognised canvas command array: " <> show (A.Array arr)
+      where
+        toListV = foldr (:) []
+        num :: A.Value -> A.Parser Double
+        num = parseJSON
+
 -- | Bounding box for the diagram
 data BBox = BBox
     { bbMinX :: !Double
@@ -244,6 +312,14 @@ encodeBBox jp bb =
 instance ToJSON BBox where
     toJSON = encodeBBox defaultJsonPrecision
 
+instance FromJSON BBox where
+    parseJSON = A.withObject "BBox" $ \o ->
+        BBox
+            <$> o A..: "minX"
+            <*> o A..: "minY"
+            <*> o A..: "maxX"
+            <*> o A..: "maxY"
+
 -- | A complete canvas diagram with dimensions and commands
 data CanvasDiagram = CanvasDiagram
     { cdWidth :: !Double
@@ -264,6 +340,97 @@ instance ToJSON CanvasDiagram where
                 , "bounds" A..= encodeBBox jp (cdBounds cd)
                 , "commands" A..= map (encodeCmd jp) (cdCommands cd)
                 ]
+
+-- | Decoding loses the original precision; 'defaultJsonPrecision' is used.
+instance FromJSON CanvasDiagram where
+    parseJSON = A.withObject "CanvasDiagram" $ \o ->
+        CanvasDiagram
+            <$> o A..: "width"
+            <*> o A..: "height"
+            <*> o A..: "bounds"
+            <*> o A..: "commands"
+            <*> pure defaultJsonPrecision
+
+--------------------------------------------------------------------------------
+-- Multi-layer diagrams
+--------------------------------------------------------------------------------
+
+{- | A single coloured layer in a multi-layer output. The command stream is
+interpreted in mask semantics: the commands describe shape and alpha, and
+the layer @mlColor@ is the tint applied with Canvas 2D @source-in@ (or the
+equivalent PixiJS mask-texture compositing). Matches the TypeScript
+@MaskLayer@ type in @diagrams-canvas-json-web@.
+-}
+data MaskLayer = MaskLayer
+    { mlName :: !(Maybe T.Text)
+    -- ^ Optional human-readable layer name.
+    , mlColor :: !(Double, Double, Double, Double)
+    -- ^ Tint colour: RGB 0-255, alpha 0-1.
+    , mlCommands :: ![CanvasCmd]
+    }
+    deriving (Show, Eq)
+
+-- | Encode a 'MaskLayer' using the given precision.
+encodeMaskLayer :: JsonPrecision -> MaskLayer -> A.Value
+encodeMaskLayer jp cl =
+    let (r, g, b, a) = mlColor cl
+        col = roundN 0
+        al = roundN (jpAlpha jp)
+        base =
+            [ "color" A..= [col r, col g, col b, al a]
+            , "commands" A..= map (encodeCmd jp) (mlCommands cl)
+            ]
+        nameField = case mlName cl of
+            Nothing -> []
+            Just n -> ["name" A..= n]
+     in A.object (nameField ++ base)
+
+-- | Encode using 'defaultJsonPrecision'.
+instance ToJSON MaskLayer where
+    toJSON = encodeMaskLayer defaultJsonPrecision
+
+instance FromJSON MaskLayer where
+    parseJSON = A.withObject "MaskLayer" $ \o -> do
+        name <- o A..:? "name"
+        col <- o A..: "color"
+        commands <- o A..: "commands"
+        case col of
+            [r, g, b, a] -> pure (MaskLayer name (r, g, b, a) commands)
+            _ -> fail "MaskLayer.color must be a 4-element array"
+
+{- | Multi-layer diagram output — the Haskell counterpart of the TypeScript
+@LayeredDiagram@ in @diagrams-canvas-json-web@. Layers are composited in
+order (first = bottom).
+-}
+data LayeredDiagram = LayeredDiagram
+    { ldWidth :: !Double
+    , ldHeight :: !Double
+    , ldBounds :: !BBox
+    , ldLayers :: ![MaskLayer]
+    , ldPrecision :: !JsonPrecision
+    }
+    deriving (Show, Eq)
+
+-- | Encode using the precision stored in the diagram.
+instance ToJSON LayeredDiagram where
+    toJSON mld =
+        let jp = ldPrecision mld
+         in A.object
+                [ "width" A..= roundN (jpDimensions jp) (ldWidth mld)
+                , "height" A..= roundN (jpDimensions jp) (ldHeight mld)
+                , "bounds" A..= encodeBBox jp (ldBounds mld)
+                , "layers" A..= map (encodeMaskLayer jp) (ldLayers mld)
+                ]
+
+-- | Decoding loses the original precision; 'defaultJsonPrecision' is used.
+instance FromJSON LayeredDiagram where
+    parseJSON = A.withObject "LayeredDiagram" $ \o ->
+        LayeredDiagram
+            <$> o A..: "width"
+            <*> o A..: "height"
+            <*> o A..: "bounds"
+            <*> o A..: "layers"
+            <*> pure defaultJsonPrecision
 
 --------------------------------------------------------------------------------
 -- Backend Definition

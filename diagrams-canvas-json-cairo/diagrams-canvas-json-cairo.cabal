@@ -1,0 +1,48 @@
+cabal-version:   3.0
+name:            diagrams-canvas-json-cairo
+version:         0.1.0.0
+synopsis:
+  Render diagrams-canvas-json output to PNG/SVG/JPEG images via gi-cairo
+
+-- description:
+license:         MIT
+license-file:    LICENSE
+author:          Handré Stolp
+maintainer:      HanStolpo@gmail.com
+
+-- copyright:
+category:        Graphics
+build-type:      Simple
+extra-doc-files: CHANGELOG.md
+
+common warnings
+  ghc-options: -Wall
+
+library
+  import:           warnings
+  exposed-modules:  Diagrams.Backend.CanvasJson.Cairo
+  build-depends:
+    , base                  ^>=4.20.2.0
+    , bytestring
+    , diagrams-canvas-json
+    , filepath
+    , gi-cairo-render
+    , JuicyPixels
+    , mtl
+
+  hs-source-dirs:   src
+  default-language: GHC2021
+
+executable diagrams-canvas-json-cairo
+  import:           warnings
+  main-is:          Main.hs
+  build-depends:
+    , aeson
+    , base                        ^>=4.20.2.0
+    , bytestring
+    , diagrams-canvas-json
+    , diagrams-canvas-json-cairo
+    , optparse-applicative
+
+  hs-source-dirs:   exe
+  default-language: GHC2021

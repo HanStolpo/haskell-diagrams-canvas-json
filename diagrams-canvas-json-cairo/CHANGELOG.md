@@ -1,0 +1,5 @@
+# Revision history for diagrams-canvas-json-cairo
+
+## 0.1.0.0 -- YYYY-mm-dd
+
+- First version. Released on an unsuspecting world.

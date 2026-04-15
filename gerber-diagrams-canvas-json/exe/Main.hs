@@ -8,11 +8,15 @@ import Data.ByteString.Lazy qualified as BL
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
-import Diagrams.Backend.CanvasJson (CanvasDiagram (..), encodeBBox, encodeCmd)
+import Diagrams.Backend.CanvasJson (
+    CanvasDiagram (..),
+    LayeredDiagram,
+    encodeBBox,
+    encodeCmd,
+ )
 import Gerber.Diagrams.CanvasJson (
     BoardLayerSpec (..),
     BoardSpec (..),
-    MultiLayerDiagram,
     buildBoardDiagram,
     clipToOutline,
     compositeLayers,
@@ -174,7 +178,7 @@ runBoardToJson specPath = do
 {- | Load a board spec, read all referenced gerber files, and build
 the board diagram.
 -}
-loadBoard :: FilePath -> IO (Either String MultiLayerDiagram)
+loadBoard :: FilePath -> IO (Either String LayeredDiagram)
 loadBoard specPath = do
     specBytes <- BL.readFile specPath
     case Aeson.eitherDecode specBytes of

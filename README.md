@@ -9,6 +9,10 @@ diagrams-canvas-json/
 ├── diagrams-canvas-json/          # Haskell library (diagrams backend)
 │   ├── src/
 │   └── diagrams-canvas-json.cabal
+├── diagrams-canvas-json-cairo/    # Haskell lib + exe: render JSON to PNG/SVG/JPEG via cairo
+│   ├── src/
+│   ├── exe/
+│   └── diagrams-canvas-json-cairo.cabal
 ├── diagrams-canvas-json-dev/      # Haskell exe: dev web server for examples
 │   ├── exe/
 │   └── diagrams-canvas-json-dev.cabal
@@ -46,6 +50,32 @@ Development web server exposing the `diagrams-canvas-json` backend alongside
 `diagrams-svg` for the TypeScript dev frontend. Serves SVG and Canvas JSON
 versions of the diagrams quickstart examples on port 8080.
 
+### diagrams-canvas-json-cairo (Haskell library + executable)
+
+Renders pre-produced JSON (single `CanvasDiagram` or multi-layer
+`LayeredDiagram`) to a raster or vector image through
+[`gi-cairo-render`][gi-cairo-render]. The output is meant to match what the
+interactive viewer shows at initial load — same fit-bounds framing, same
+per-layer mask tinting, same @destination-out@/@destination-in@ semantics.
+
+Supported formats:
+
+- **PNG** — native cairo image surface
+- **SVG** — native cairo SVG surface (vector output)
+- **JPEG** — the rendered pixel buffer is re-encoded via
+  [JuicyPixels][juicypixels] (cairo itself has no JPEG writer)
+
+CLI mirrors the viewer's `single` and `board` subcommands but writes a file
+via `--out`:
+
+```bash
+gerber-diagrams-canvas-json board-to-json top-view.json \
+  | diagrams-canvas-json-cairo board --out top.png --width 1200 --height 900
+```
+
+[gi-cairo-render]: https://hackage.haskell.org/package/gi-cairo-render
+[juicypixels]: https://hackage.haskell.org/package/JuicyPixels
+
 ### diagrams-canvas-json-viewer (Haskell executable)
 
 Generic browser viewer for pre-rendered diagrams-canvas-json output. Reads
@@ -53,7 +83,7 @@ JSON from a file or stdin and serves it in a Scotty-backed page using the
 bundled `diagrams-canvas-json-web` Canvas 2D or PixiJS renderer. Subcommands:
 
 - `single FILE` — a single `CanvasDiagram` rendered as one black layer
-- `board FILE` — a `MultiLayerDiagram` (e.g. the output of `board-to-json`)
+- `board FILE` — a `LayeredDiagram` (e.g. the output of `board-to-json`)
 - `grid FILE` — a layer array rendered as an NxM grid
 - `stack FILE` — a layer array rendered as a toggleable stack with legend
 

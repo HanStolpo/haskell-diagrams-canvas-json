@@ -1,5 +1,6 @@
 packages:
   ./diagrams-canvas-json
+  ./diagrams-canvas-json-cairo
   ./diagrams-canvas-json-dev
   ./diagrams-canvas-json-viewer
   ./gerber-diagrams-canvas-json

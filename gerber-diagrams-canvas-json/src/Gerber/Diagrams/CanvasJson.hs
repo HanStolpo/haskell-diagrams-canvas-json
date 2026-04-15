@@ -25,8 +25,6 @@ module Gerber.Diagrams.CanvasJson (
     OutlineMode (..),
     BoardLayerSpec (..),
     BoardSpec (..),
-    ColoredLayer (..),
-    MultiLayerDiagram (..),
     buildBoardLayerCommands,
     buildBoardDiagram,
     recolorCommands,
@@ -43,7 +41,7 @@ module Gerber.Diagrams.CanvasJson (
 ) where
 
 import Control.Foldl qualified as L
-import Data.Aeson (FromJSON (..), ToJSON (..), (.!=), (.:), (.:?))
+import Data.Aeson (FromJSON (..), (.!=), (.:), (.:?))
 import Data.Aeson qualified as A
 import Data.Function (on)
 import Data.IntMap.Strict (IntMap)
@@ -60,12 +58,11 @@ import Diagrams.Backend.CanvasJson (
     CanvasJsonOptions (..),
     CompositeOp (..),
     JsonPrecision (..),
+    LayeredDiagram (..),
+    MaskLayer (..),
     defaultJsonPrecision,
-    encodeBBox,
-    encodeCmd,
     optimizeCommands,
     renderCanvasJson,
-    roundN,
  )
 import Diagrams.Prelude (Any, QDiagram, SizeSpec, V2, mkWidth)
 import Gerber.Command qualified as Gerber
@@ -565,55 +562,6 @@ instance FromJSON BoardSpec where
                 , bsLayers = layers
                 }
 
--- | A single colored layer in the output.
-data ColoredLayer = ColoredLayer
-    { clName :: !(Maybe Text)
-    -- ^ Optional human-readable layer name
-    , clColor :: !(Double, Double, Double, Double)
-    , clCommands :: ![CanvasCmd]
-    }
-    deriving (Show, Eq)
-
--- | Encode a colored layer using the given precision.
-encodeColoredLayer :: JsonPrecision -> ColoredLayer -> A.Value
-encodeColoredLayer jp cl =
-    let (r, g, b, a) = clColor cl
-        col = roundN 0
-        al = roundN (jpAlpha jp)
-        base =
-            [ "color" A..= [col r, col g, col b, al a]
-            , "commands" A..= map (encodeCmd jp) (clCommands cl)
-            ]
-        nameField = case clName cl of
-            Nothing -> []
-            Just n -> ["name" A..= n]
-     in A.object (nameField ++ base)
-
--- | Encode using 'defaultJsonPrecision'.
-instance ToJSON ColoredLayer where
-    toJSON = encodeColoredLayer defaultJsonPrecision
-
--- | Multi-layer diagram output with per-layer commands and colours.
-data MultiLayerDiagram = MultiLayerDiagram
-    { mldWidth :: !Double
-    , mldHeight :: !Double
-    , mldBounds :: !BBox
-    , mldLayers :: ![ColoredLayer]
-    , mldPrecision :: !JsonPrecision
-    }
-    deriving (Show, Eq)
-
--- | Encode using the precision stored in the diagram.
-instance ToJSON MultiLayerDiagram where
-    toJSON mld =
-        let jp = mldPrecision mld
-         in A.object
-                [ "width" A..= roundN (jpDimensions jp) (mldWidth mld)
-                , "height" A..= roundN (jpDimensions jp) (mldHeight mld)
-                , "bounds" A..= encodeBBox jp (mldBounds mld)
-                , "layers" A..= map (encodeColoredLayer jp) (mldLayers mld)
-                ]
-
 {- | Build the command list for a single board layer.
 
 The outline mode determines how the layer interacts with the board outline:
@@ -720,14 +668,14 @@ buildBoardDiagram ::
     Maybe (Double, Double, Double, Double) ->
     -- | Per-layer specs paired with their base diagrams
     [(BoardLayerSpec, CanvasDiagram)] ->
-    MultiLayerDiagram
+    LayeredDiagram
 buildBoardDiagram outline throughs mBaseColor entries =
-    MultiLayerDiagram
-        { mldWidth = maximum allWidths
-        , mldHeight = maximum allHeights
-        , mldBounds = foldl1 unionBBox allBounds
-        , mldLayers = baseLayer ++ map buildOne entries
-        , mldPrecision = cdPrecision outline
+    LayeredDiagram
+        { ldWidth = maximum allWidths
+        , ldHeight = maximum allHeights
+        , ldBounds = foldl1 unionBBox allBounds
+        , ldLayers = baseLayer ++ map buildOne entries
+        , ldPrecision = cdPrecision outline
         }
   where
     allDiagrams = outline : throughs ++ map snd entries
@@ -745,18 +693,18 @@ buildBoardDiagram outline throughs mBaseColor entries =
     baseLayer = case mBaseColor of
         Nothing -> []
         Just color ->
-            [ ColoredLayer
-                { clName = Just "substrate"
-                , clColor = color
-                , clCommands = filledOutlineWithHoles color
+            [ MaskLayer
+                { mlName = Just "substrate"
+                , mlColor = color
+                , mlCommands = filledOutlineWithHoles color
                 }
             ]
 
     buildOne (spec, base) =
-        ColoredLayer
-            { clName = blsName spec
-            , clColor = blsColor spec
-            , clCommands = buildBoardLayerCommands (blsColor spec) (blsOutlineMode spec) base outline throughs
+        MaskLayer
+            { mlName = blsName spec
+            , mlColor = blsColor spec
+            , mlCommands = buildBoardLayerCommands (blsColor spec) (blsOutlineMode spec) base outline throughs
             }
 
 --------------------------------------------------------------------------------
