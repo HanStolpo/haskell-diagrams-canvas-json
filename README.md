@@ -1,6 +1,6 @@
 # diagrams-canvas-json
 
-A [`diagrams`][diagrams] back-end that encodes drawings as JSON to be rendered in a browser using the Canvas API or WebGL via [PixiJS][pixjs].
+A [`diagrams`][diagrams] back-end that encodes drawings as JSON to be rendered in a browser using the Canvas API or WebGL via [PixiJS][pixijs].
 
 [diagrams]: https://hackage.haskell.org/package/diagrams
 [pixijs]: https://pixijs.com/
