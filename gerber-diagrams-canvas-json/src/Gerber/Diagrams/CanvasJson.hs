@@ -58,6 +58,7 @@ import Diagrams.Backend.CanvasJson (
     CanvasDiagram (..),
     CanvasJson,
     CanvasJsonOptions (..),
+    CompositeOp (..),
     JsonPrecision (..),
     defaultJsonPrecision,
     encodeBBox,
@@ -191,7 +192,7 @@ outlineToFilled (fr, fg, fb, fa) cmds =
 
     punchCutout wc =
         [ CmdSave
-        , CmdSetGlobalCompositeOperation "destination-out"
+        , CmdSetGlobalCompositeOperation DestinationOut
         ]
             ++ fillContour (wcPoints wc)
             ++ [CmdRestore]
@@ -463,7 +464,7 @@ clipToOutline content outline =
         , cdCommands =
             transformPolarity (cdCommands content)
                 ++ [ CmdSave
-                   , CmdSetGlobalCompositeOperation "destination-in"
+                   , CmdSetGlobalCompositeOperation DestinationIn
                    ]
                 ++ outlineToFilled (0, 0, 0, 1) (cdCommands outline)
                 ++ [CmdRestore]
@@ -648,7 +649,7 @@ buildBoardLayerCommands color mode base outline throughs =
         OutlineClip ->
             transformPolarity (cdCommands base)
                 ++ [ CmdSave
-                   , CmdSetGlobalCompositeOperation "destination-in"
+                   , CmdSetGlobalCompositeOperation DestinationIn
                    ]
                 ++ outlineToFilled (0, 0, 0, 1) (cdCommands outline)
                 ++ [CmdRestore]
@@ -804,11 +805,11 @@ processGroups inverted = go
          in if inverted
                 then
                     if hasDark
-                        then CmdSave : CmdSetGlobalCompositeOperation "destination-out" : group ++ go remaining
+                        then CmdSave : CmdSetGlobalCompositeOperation DestinationOut : group ++ go remaining
                         else go remaining -- drop clear groups entirely
                 else
                     if hasClear
-                        then CmdSave : CmdSetGlobalCompositeOperation "destination-out" : group ++ go remaining
+                        then CmdSave : CmdSetGlobalCompositeOperation DestinationOut : group ++ go remaining
                         else CmdSave : group ++ go remaining
     go (cmd : rest) = cmd : go rest
 

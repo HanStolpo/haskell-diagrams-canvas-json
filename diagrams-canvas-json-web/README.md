@@ -259,33 +259,33 @@ interface BBox {
 
 Commands are encoded as compact JSON arrays with a string opcode followed by parameters:
 
-| Opcode | Parameters                      | Description                                                      |
-| ------ | ------------------------------- | ---------------------------------------------------------------- |
-| `S`    | -                               | Save canvas state                                                |
-| `R`    | -                               | Restore canvas state                                             |
-| `T`    | a, b, c, d, e, f                | Apply transform matrix                                           |
-| `B`    | -                               | Begin path                                                       |
-| `M`    | x, y                            | Move to (absolute)                                               |
-| `L`    | x, y                            | Line to (absolute)                                               |
-| `C`    | cx1, cy1, cx2, cy2, x, y        | Cubic bezier to                                                  |
-| `Q`    | cx, cy, x, y                    | Quadratic bezier to                                              |
-| `A`    | cx, cy, r, startAngle, endAngle | Arc                                                              |
-| `Z`    | -                               | Close path                                                       |
-| `F`    | r, g, b, a                      | Fill path (RGB 0-255, alpha 0-1)                                 |
-| `K`    | r, g, b, a, lineWidth           | Stroke path (line width in diagram coords, scales with diagram)  |
-| `KV`   | r, g, b, a, lineWidth           | Stroke path (line width relative to view, constant visual width) |
-| `FS`   | r, g, b, a                      | Set fill color only (no fill operation)                          |
-| `KS`   | r, g, b, a, lineWidth           | Set stroke color + line width in diagram coords only             |
-| `KSV`  | r, g, b, a, lineWidth           | Set stroke color + line width relative to view only              |
-| `f`    | -                               | Fill using current fill style                                    |
-| `k`    | -                               | Stroke using current stroke style                                |
-| `LC`   | cap                             | Set line cap (0=butt, 1=round, 2=square)                         |
-| `LJ`   | join                            | Set line join (0=miter, 1=round, 2=bevel)                        |
-| `LD`   | ...dashes                       | Set line dash pattern (diagram coords)                           |
-| `LDV`  | ...dashes                       | Set line dash pattern (relative to view)                         |
-| `FT`   | text, x, y                      | Fill text at position                                            |
-| `SF`   | font                            | Set font                                                         |
-| `GCO`  | operation                       | Set globalCompositeOperation (e.g. "destination-out")            |
+| Opcode | Parameters                      | Description                                                                               |
+| ------ | ------------------------------- | ----------------------------------------------------------------------------------------- |
+| `S`    | -                               | Save canvas state                                                                         |
+| `R`    | -                               | Restore canvas state                                                                      |
+| `T`    | a, b, c, d, e, f                | Apply transform matrix                                                                    |
+| `B`    | -                               | Begin path                                                                                |
+| `M`    | x, y                            | Move to (absolute)                                                                        |
+| `L`    | x, y                            | Line to (absolute)                                                                        |
+| `C`    | cx1, cy1, cx2, cy2, x, y        | Cubic bezier to                                                                           |
+| `Q`    | cx, cy, x, y                    | Quadratic bezier to                                                                       |
+| `A`    | cx, cy, r, startAngle, endAngle | Arc                                                                                       |
+| `Z`    | -                               | Close path                                                                                |
+| `F`    | r, g, b, a                      | Fill path (RGB 0-255, alpha 0-1)                                                          |
+| `K`    | r, g, b, a, lineWidth           | Stroke path (line width in diagram coords, scales with diagram)                           |
+| `KV`   | r, g, b, a, lineWidth           | Stroke path (line width relative to view, constant visual width)                          |
+| `FS`   | r, g, b, a                      | Set fill color only (no fill operation)                                                   |
+| `KS`   | r, g, b, a, lineWidth           | Set stroke color + line width in diagram coords only                                      |
+| `KSV`  | r, g, b, a, lineWidth           | Set stroke color + line width relative to view only                                       |
+| `f`    | -                               | Fill using current fill style                                                             |
+| `k`    | -                               | Stroke using current stroke style                                                         |
+| `LC`   | cap                             | Set line cap (0=butt, 1=round, 2=square)                                                  |
+| `LJ`   | join                            | Set line join (0=miter, 1=round, 2=bevel)                                                 |
+| `LD`   | ...dashes                       | Set line dash pattern (diagram coords)                                                    |
+| `LDV`  | ...dashes                       | Set line dash pattern (relative to view)                                                  |
+| `FT`   | text, x, y                      | Fill text at position                                                                     |
+| `SF`   | font                            | Set font                                                                                  |
+| `GCO`  | operation                       | Set globalCompositeOperation (`"source-over"`, `"destination-out"` or `"destination-in"`) |
 
 ### Coordinate-Space vs View-Relative
 

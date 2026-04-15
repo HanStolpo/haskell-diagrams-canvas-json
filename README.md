@@ -211,7 +211,9 @@ See `diagrams-canvas-json-web/src/lib/types.ts` for full command definitions.
   this is rare since the standard diagrams line width constants all use
   `normalized ... `atLeast` output ...`.
 - **PixiJS backend**: Line dash patterns are not supported (rendered as solid).
-  Only common `globalCompositeOperation` modes are mapped to PixiJS blend modes.
+  Only the `globalCompositeOperation` modes actually emitted by the backend
+  (`source-over`, `destination-out`, `destination-in`) are supported; others
+  are rejected by the type system.
 
 ## Example output of dev server
 

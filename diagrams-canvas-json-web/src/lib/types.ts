@@ -56,7 +56,26 @@ export type CanvasCommand =
   | ["FT", string, number, number] // FillText text, x, y
   | ["SF", string] // SetFont
   // Canvas state
-  | ["GCO", string]; // SetGlobalCompositeOperation e.g. "source-over", "destination-out" font
+  | ["GCO", CompositeOp]; // SetGlobalCompositeOperation
+
+/**
+ * Subset of Canvas 2D `globalCompositeOperation` values that the backend
+ * actually emits. Each operation modifies how subsequent draws interact
+ * with the pixels already on the canvas ("destination").
+ *
+ * - `"source-over"` — the Canvas default; new shapes are drawn on top of
+ *   existing content using normal alpha compositing. Emit this to reset
+ *   the blend mode after a destination-* group.
+ * - `"destination-out"` — wherever a new shape is drawn, the existing
+ *   pixel is erased to transparent. The new shape's colour is ignored.
+ *   Used for gerber clear polarity (a clear aperture punches a hole in
+ *   the darker layer beneath it).
+ * - `"destination-in"` — existing pixels are kept only where the new
+ *   shape overlaps them; elsewhere the destination is erased to
+ *   transparent. Used to clip a layer's content to the board outline by
+ *   drawing the outline after the layer.
+ */
+export type CompositeOp = "source-over" | "destination-out" | "destination-in";
 
 /** Root diagram structure from the backend */
 export interface CanvasDiagram {

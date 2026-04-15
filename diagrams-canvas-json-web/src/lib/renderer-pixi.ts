@@ -6,7 +6,12 @@ import {
   Matrix,
   Text,
 } from "pixi.js";
-import type { CanvasDiagram, CanvasCommand, Color } from "./types.js";
+import type {
+  CanvasDiagram,
+  CanvasCommand,
+  Color,
+  CompositeOp,
+} from "./types.js";
 import { calculateFitTransform } from "./renderer.js";
 
 /** Drawing state tracked manually (Canvas 2D has this built-in) */
@@ -80,31 +85,22 @@ function lineJoinToString(join: number): "miter" | "round" | "bevel" {
   }
 }
 
-/** Map Canvas 2D globalCompositeOperation to PixiJS blend mode string */
-function compositeOpToBlendMode(op: string): string {
-  const map: Record<string, string> = {
-    "source-over": "normal",
-    multiply: "multiply",
-    screen: "screen",
-    overlay: "overlay",
-    darken: "darken",
-    lighten: "lighten",
-    "color-dodge": "color-dodge",
-    "color-burn": "color-burn",
-    "hard-light": "hard-light",
-    "soft-light": "soft-light",
-    difference: "difference",
-    exclusion: "exclusion",
-    "destination-out": "erase",
-  };
-  const result = map[op];
-  if (!result) {
-    console.warn(
-      `Unsupported composite operation "${op}", falling back to normal`,
-    );
-    return "normal";
+/**
+ * Map the {@link CompositeOp} emitted by the Haskell backend to a PixiJS
+ * blend mode. `destination-in` is not a PixiJS blend mode; it is handled
+ * at the viewer level (see `splitAtDestinationIn` in `viewer-pixi.ts`),
+ * so encountering it inside a per-layer command stream falls back to
+ * `normal` rendering.
+ */
+function compositeOpToBlendMode(op: CompositeOp): string {
+  switch (op) {
+    case "source-over":
+      return "normal";
+    case "destination-out":
+      return "erase";
+    case "destination-in":
+      return "normal";
   }
-  return result;
 }
 
 /**

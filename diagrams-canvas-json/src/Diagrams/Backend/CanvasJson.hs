@@ -30,6 +30,8 @@ module Diagrams.Backend.CanvasJson (
     CanvasCmd (..),
     CanvasDiagram (..),
     BBox (..),
+    CompositeOp (..),
+    compositeOpToText,
 
     -- * Optimization
     optimizeCommands,
@@ -140,8 +142,41 @@ data CanvasCmd
       CmdFillText !String !Double !Double
     | CmdSetFont !String
     | -- Canvas state
-      CmdSetGlobalCompositeOperation !String -- e.g. "source-over", "destination-out"
+      CmdSetGlobalCompositeOperation !CompositeOp
     deriving (Show, Eq, Generic)
+
+{- | Subset of Canvas 2D @globalCompositeOperation@ values that this backend
+actually emits. Using a closed enumeration lets producers and consumers
+exhaustively pattern-match on it and keeps the wire format stable.
+
+Both operations affect how subsequent draw calls interact with the pixels
+already on the canvas ("destination"). The HTML Canvas 2D spec defines
+them in terms of a per-pixel Porter-Duff composite;
+-}
+data CompositeOp
+    = {- | @source-over@ — the Canvas 2D default. New shapes are drawn on top
+      of the existing content using normal alpha compositing. Emit this to
+      reset the blend mode after a destination-* group without relying on
+      a surrounding 'CmdSave'\/'CmdRestore' to pop it back.
+      -}
+      SourceOver
+    | {- | @destination-out@ — wherever a new shape is drawn, the existing
+      (destination) pixel is erased to transparent. The new shape's own
+      colour is ignored.
+      -}
+      DestinationOut
+    | {- | @destination-in@ — existing pixels are kept only where the new
+      shape overlaps them; elsewhere the destination is erased to
+      transparent.
+      -}
+      DestinationIn
+    deriving (Show, Eq, Generic)
+
+-- | Wire-level string for a 'CompositeOp', matching the Canvas 2D spec.
+compositeOpToText :: CompositeOp -> String
+compositeOpToText SourceOver = "source-over"
+compositeOpToText DestinationOut = "destination-out"
+compositeOpToText DestinationIn = "destination-in"
 
 -- | Encode a command as a compact JSON array using the given precision settings.
 encodeCmd :: JsonPrecision -> CanvasCmd -> A.Value
@@ -170,7 +205,7 @@ encodeCmd jp cmd = case cmd of
     CmdSetLineDashView ds -> A.toJSON (A.String "LDV" : map da ds)
     CmdFillText txt x y -> A.toJSON [A.String "FT", A.toJSON txt, co x, co y]
     CmdSetFont f -> A.toJSON [A.String "SF", A.toJSON f]
-    CmdSetGlobalCompositeOperation gco -> A.toJSON [A.String "GCO", A.toJSON gco]
+    CmdSetGlobalCompositeOperation gco -> A.toJSON [A.String "GCO", A.toJSON (compositeOpToText gco)]
   where
     co = roundN (jpCoordinates jp)
     col = roundN 0
@@ -641,7 +676,7 @@ data GroupContext = GroupContext
     , gcLineCap :: Maybe Int
     , gcLineJoin :: Maybe Int
     , gcLineDash :: Maybe (StrokeMode, [Double])
-    , gcGCO :: Maybe String
+    , gcGCO :: Maybe CompositeOp
     }
     deriving (Eq)
 
