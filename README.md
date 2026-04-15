@@ -1,6 +1,18 @@
 # diagrams-canvas-json
 
-A diagrams backend that encodes drawings as JSON to be rendered in a browser using the Canvas API.
+A [`diagrams`][diagrams] back-end that encodes drawings as JSON to be rendered in a browser using the Canvas API or WebGL via [PixiJS][pixjs].
+
+[diagrams]: https://hackage.haskell.org/package/diagrams
+[pixijs]: https://pixijs.com/
+
+## AI Disclaimer
+
+This project was generated using the AI coding agent Claude Code.
+
+## Why
+
+This does not cover all of `diagrams`'s features but just enough for my purposes which is mostly rendering PCB Gerber files
+in several different ways in the browser.
 
 ## Project Structure
 
@@ -37,12 +49,19 @@ diagrams-canvas-json/
 
 A diagrams backend that renders to compact JSON command arrays for Canvas execution. Features:
 
-- **Coordinate-space vs view-relative line widths**: `K`/`KS` commands scale with the diagram transform (for gerber traces, local/global measures); `KV`/`KSV` commands maintain constant visual width regardless of zoom (for normalized/output measures like `veryThick`, `thin`, etc.)
-- **Independent dash pattern modes**: `LD` (coordinate-space) and `LDV` (view-relative), classified separately from line width
-- **Fill/stroke separation**: Only closed paths are filled; stroke is skipped when lineWidth=0; alpha is multiplied by fill/stroke opacity attributes
-- **Command optimization**: Consecutive Save/Restore groups sharing the same context are collapsed into set-only commands (`FS`, `KS`, `KSV`); transparent fills and strokes are stripped
-- **Configurable JSON precision**: Per-category decimal place control (coordinates, alpha, transforms, line widths, dashes, angles) using `Scientific` numbers to avoid IEEE 754 bloat
-- **Measure classification**: Line width and dashing measures are classified by probing `unmeasureAttrs` with different normalized-to-output scales, correctly handling `local`, `global`, `normalized`, `output`, and `atLeast` combinations
+- **Coordinate-space vs view-relative line widths**: `K`/`KS` commands scale with the diagram transform (for gerber
+  traces, local/global measures); `KV`/`KSV` commands maintain constant visual width regardless of zoom (for
+  normalized/output measures like `veryThick`, `thin`, etc.)
+- **Independent dash pattern modes**: `LD` (coordinate-space) and `LDV` (view-relative), classified separately from line
+  width
+- **Fill/stroke separation**: Only closed paths are filled; stroke is skipped when lineWidth=0; alpha is multiplied by
+  fill/stroke opacity attributes
+- **Command optimization**: Consecutive Save/Restore groups sharing the same context are collapsed into set-only
+  commands (`FS`, `KS`, `KSV`); transparent fills and strokes are stripped
+- **Configurable JSON precision**: Per-category decimal place control (coordinates, alpha, transforms, line widths,
+  dashes, angles) using `Scientific` numbers to avoid IEEE 754 bloat
+- **Measure classification**: Line width and dashing measures are classified by probing `unmeasureAttrs` with different
+  normalized-to-output scales, correctly handling `local`, `global`, `normalized`, `output`, and `atLeast` combinations
 
 ### diagrams-canvas-json-dev (Haskell executable)
 
@@ -52,11 +71,9 @@ versions of the diagrams quickstart examples on port 8080.
 
 ### diagrams-canvas-json-cairo (Haskell library + executable)
 
-Renders pre-produced JSON (single `CanvasDiagram` or multi-layer
-`LayeredDiagram`) to a raster or vector image through
-[`gi-cairo-render`][gi-cairo-render]. The output is meant to match what the
-interactive viewer shows at initial load — same fit-bounds framing, same
-per-layer mask tinting, same @destination-out@/@destination-in@ semantics.
+Renders pre-produced JSON (single `CanvasDiagram` or multi-layer `LayeredDiagram`) to a raster or vector image through
+[`gi-cairo-render`][gi-cairo-render]. The output is meant to match what the interactive viewer shows at initial load —
+same fit-bounds framing, same per-layer mask tinting, same @destination-out@/@destination-in@ semantics.
 
 Supported formats:
 
@@ -65,8 +82,7 @@ Supported formats:
 - **JPEG** — the rendered pixel buffer is re-encoded via
   [JuicyPixels][juicypixels] (cairo itself has no JPEG writer)
 
-CLI mirrors the viewer's `single` and `board` subcommands but writes a file
-via `--out`:
+CLI mirrors the viewer's `single` and `board` subcommands but writes a file via `--out`:
 
 ```bash
 gerber-diagrams-canvas-json board-to-json top-view.json \
@@ -78,18 +94,16 @@ gerber-diagrams-canvas-json board-to-json top-view.json \
 
 ### diagrams-canvas-json-viewer (Haskell executable)
 
-Generic browser viewer for pre-rendered diagrams-canvas-json output. Reads
-JSON from a file or stdin and serves it in a Scotty-backed page using the
-bundled `diagrams-canvas-json-web` Canvas 2D or PixiJS renderer. Subcommands:
+Generic browser viewer for pre-rendered diagrams-canvas-json output. Reads JSON from a file or stdin and serves it in a
+Scotty-backed page using the bundled `diagrams-canvas-json-web` Canvas 2D or PixiJS renderer. Subcommands:
 
 - `single FILE` — a single `CanvasDiagram` rendered as one black layer
 - `board FILE` — a `LayeredDiagram` (e.g. the output of `board-to-json`)
 - `grid FILE` — a layer array rendered as an NxM grid
 - `stack FILE` — a layer array rendered as a toggleable stack with legend
 
-Each subcommand accepts `--pixi` (switch to PixiJS) and `--port`. If `FILE`
-is omitted or `-`, the viewer reads from stdin, so gerber output can be
-piped straight in:
+Each subcommand accepts `--pixi` (switch to PixiJS) and `--port`. If `FILE` is omitted or `-`, the viewer reads from
+stdin, so gerber output can be piped straight in:
 
 ```bash
 gerber-diagrams-canvas-json board-to-json board.json | diagrams-canvas-json-viewer board --pixi
@@ -100,25 +114,32 @@ gerber-diagrams-canvas-json board-to-json board.json | diagrams-canvas-json-view
 Converts Gerber PCB artwork files to canvas JSON with post-processing for multi-layer board visualization. Features:
 
 - **Polarity compositing**: Dark/clear shapes via `destination-out` canvas blending
-- **Outline extraction**: Contour welding with spatial index for joining segments by endpoint proximity, detecting board outline vs cutouts
+- **Outline extraction**: Contour welding with spatial index for joining segments by endpoint proximity, detecting board
+  outline vs cutouts
 - **Layer clipping**: Constrain layer content to board outline via `destination-in` compositing
-- **Multi-layer board rendering**: Configurable layer stack with colors, outline modes, base color, and prepreg color (`BoardSpec`)
+- **Multi-layer board rendering**: Configurable layer stack with colors, outline modes, base color, and prepreg color
+  (`BoardSpec`)
 - **Automatic JSON precision**: Coordinate precision derived from Gerber format spec and unit conversion
 
-CLI tool with commands: `to-json`, `outline-to-json`, `composite-to-json`,
-`clip-to-json`, `board-to-json`, `layers-to-json`. All commands emit JSON on
-stdout — pipe into `diagrams-canvas-json-viewer` to view in the browser.
+CLI tool with commands: `to-json`, `outline-to-json`, `composite-to-json`, `clip-to-json`, `board-to-json`,
+`layers-to-json`. All commands emit JSON on stdout — pipe into `diagrams-canvas-json-viewer` to view in the browser.
 
 ### diagrams-canvas-json-web (TypeScript)
 
 TypeScript library for rendering canvas JSON output in the browser. Features:
 
 - **Canvas 2D renderer**: Interprets the command stream onto an HTML Canvas context
-- **PixiJS renderer**: Alternative WebGL/WebGPU-accelerated backend using [PixiJS 8.x](https://pixijs.com/), consuming the same command stream (import from `diagrams-canvas-json-web/pixi`)
-- **Pan/zoom viewers**: Both Canvas 2D (`createViewer()`) and PixiJS (`createPixiViewer()`) viewers with mouse wheel zoom (cursor-anchored), drag pan, and checkerboard transparency background
-- **Mask-texture compositing** (PixiJS): Each layer is rendered as white-on-transparent to a RenderTexture, then displayed via tinted Sprites. Gerber polarity (`destination-out`) uses PixiJS erase blend mode; outline clipping (`destination-in`) uses a second RenderTexture as a PixiJS mask
-- **Command and custom layers**: Render pre-colored command layers and custom overlay layers sharing the same pan/zoom transform
-- **View-relative support**: `KV`/`KSV` and `LDV` commands are divided by the current zoom scale for constant visual appearance
+- **PixiJS renderer**: Alternative WebGL/WebGPU-accelerated backend using [PixiJS 8.x](https://pixijs.com/), consuming
+  the same command stream (import from `diagrams-canvas-json-web/pixi`)
+- **Pan/zoom viewers**: Both Canvas 2D (`createViewer()`) and PixiJS (`createPixiViewer()`) viewers with mouse wheel
+  zoom (cursor-anchored), drag pan, and checkerboard transparency background
+- **Mask-texture compositing** (PixiJS): Each layer is rendered as white-on-transparent to a RenderTexture, then
+  displayed via tinted Sprites. Gerber polarity (`destination-out`) uses PixiJS erase blend mode; outline clipping
+  (`destination-in`) uses a second RenderTexture as a PixiJS mask
+- **Command and custom layers**: Render pre-colored command layers and custom overlay layers sharing the same pan/zoom
+  transform
+- **View-relative support**: `KV`/`KSV` and `LDV` commands are divided by the current zoom scale for constant visual
+  appearance
 
 ## Quick Start
 
