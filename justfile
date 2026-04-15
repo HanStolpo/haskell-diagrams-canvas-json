@@ -18,7 +18,7 @@ dev:
     }
     trap cleanup INT TERM
 
-    cabal run diagrams-canvas-json 2>&1 &
+    cabal run diagrams-canvas-json-dev 2>&1 &
     PID1=$!
     npm run --prefix diagrams-canvas-json-web dev 2>&1 &
     PID2=$!

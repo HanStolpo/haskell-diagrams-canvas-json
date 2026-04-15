@@ -44,7 +44,6 @@ executable gerber-diagrams-canvas-json
     , filepath
     , gerber-diagrams-canvas-json
     , optparse-applicative
-    , scotty
     , text
 
   hs-source-dirs:   exe

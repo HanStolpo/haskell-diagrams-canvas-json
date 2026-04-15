@@ -183,7 +183,7 @@ async function loadExamples(): Promise<void> {
           <div class="example-pane svg-pane" style="grid-column: span 2;">
             <div class="placeholder-text">
               <p><strong>Haskell server is not running</strong></p>
-              <p>Start the server with: <code>cabal run diagrams-canvas-json</code></p>
+              <p>Start the server with: <code>cabal run diagrams-canvas-json-dev</code></p>
               <p>The server should be available at http://localhost:8080</p>
             </div>
           </div>

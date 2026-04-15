@@ -357,7 +357,9 @@ export async function createPixiViewer(
 
   /** Render all layer scenes to their RenderTextures at the current transform. */
   function renderFull(): void {
-    if (destroyed) { return; }
+    if (destroyed) {
+      return;
+    }
     const cw = container.clientWidth;
     const ch = container.clientHeight;
 

@@ -1,0 +1,32 @@
+cabal-version:   3.0
+name:            diagrams-canvas-json-viewer
+version:         0.1.0.0
+synopsis:        Browser viewer for pre-rendered diagrams-canvas-json output
+
+-- description:
+license:         MIT
+license-file:    LICENSE
+author:          Handré Stolp
+maintainer:      HanStolpo@gmail.com
+
+-- copyright:
+category:        Graphics
+build-type:      Simple
+extra-doc-files: CHANGELOG.md
+
+common warnings
+  ghc-options: -Wall
+
+executable diagrams-canvas-json-viewer
+  import:           warnings
+  main-is:          Main.hs
+  build-depends:
+    , base                  ^>=4.20.2.0
+    , bytestring
+    , filepath
+    , optparse-applicative
+    , scotty
+    , text
+
+  hs-source-dirs:   exe
+  default-language: GHC2021

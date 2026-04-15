@@ -1,0 +1,39 @@
+cabal-version:   3.0
+name:            diagrams-canvas-json-dev
+version:         0.1.0.0
+synopsis:
+  Development web server for diagrams-canvas-json (renders examples as SVG and JSON)
+
+-- description:
+license:         MIT
+license-file:    LICENSE
+author:          Handré Stolp
+maintainer:      HanStolpo@gmail.com
+
+-- copyright:
+category:        Graphics
+build-type:      Simple
+extra-doc-files: CHANGELOG.md
+
+common warnings
+  ghc-options: -Wall
+
+executable diagrams-canvas-json-dev
+  import:           warnings
+  main-is:          Main.hs
+  build-depends:
+    , aeson
+    , base                  ^>=4.20.2.0
+    , bytestring
+    , diagrams
+    , diagrams-canvas-json
+    , diagrams-lib
+    , diagrams-svg
+    , http-types
+    , lucid-svg
+    , scotty
+    , svg-builder
+    , text
+
+  hs-source-dirs:   exe
+  default-language: GHC2021

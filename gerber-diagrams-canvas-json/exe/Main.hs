@@ -7,7 +7,6 @@ import Data.Aeson qualified as Aeson
 import Data.ByteString.Lazy qualified as BL
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
-import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as T
 import Diagrams.Backend.CanvasJson (CanvasDiagram (..), encodeBBox, encodeCmd)
 import Gerber.Diagrams.CanvasJson (
@@ -24,134 +23,46 @@ import Gerber.Diagrams.CanvasJson (
     syntheticOutline,
  )
 import Options.Applicative
-import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.IO (hPutStrLn, stderr)
-import Web.Scotty (get, raw, scotty, setHeader)
 
--- | Name of the bundled Canvas 2D JS library file.
-jsBundleFileName :: FilePath
-jsBundleFileName = "diagrams-canvas-json-web.iife.js"
-
--- | Name of the bundled PixiJS library file.
-pixiJsBundleFileName :: FilePath
-pixiJsBundleFileName = "diagrams-canvas-json-web-pixi.iife.js"
-
-{- | Resolve the path to the JS bundle.
-
-Uses the @DIAGRAMS_CANVAS_JSON_WEB_DIR@ environment variable if set,
-otherwise falls back to the default path relative to the project root.
+{- | CLI commands. Every command emits JSON on stdout; view the output with
+@diagrams-canvas-json-viewer@.
 -}
-resolveJsBundlePath :: IO FilePath
-resolveJsBundlePath = do
-    mDir <- lookupEnv "DIAGRAMS_CANVAS_JSON_WEB_DIR"
-    pure $ case mDir of
-        Just dir -> dir </> jsBundleFileName
-        Nothing -> "diagrams-canvas-json-web" </> "dist" </> jsBundleFileName
-
--- | Read the JS bundle, failing with a helpful message if not found.
-readJsBundle :: IO BL.ByteString
-readJsBundle = do
-    path <- resolveJsBundlePath
-    result <- try (BL.readFile path) :: IO (Either SomeException BL.ByteString)
-    case result of
-        Right bs -> pure bs
-        Left _ -> do
-            hPutStrLn stderr $ "Error: Could not read JS bundle at: " <> path
-            hPutStrLn stderr "Set DIAGRAMS_CANVAS_JSON_WEB_DIR to the directory containing the built JS library."
-            hPutStrLn stderr "To build it: cd diagrams-canvas-json-web && npm run build:bundle"
-            exitFailure
-
-{- | Resolve the path to the PixiJS bundle.
-
-Uses the @DIAGRAMS_CANVAS_JSON_WEB_DIR@ environment variable if set,
-otherwise falls back to the default path relative to the project root.
--}
-resolvePixiJsBundlePath :: IO FilePath
-resolvePixiJsBundlePath = do
-    mDir <- lookupEnv "DIAGRAMS_CANVAS_JSON_WEB_DIR"
-    pure $ case mDir of
-        Just dir -> dir </> pixiJsBundleFileName
-        Nothing -> "diagrams-canvas-json-web" </> "dist" </> pixiJsBundleFileName
-
--- | Read the PixiJS bundle, failing with a helpful message if not found.
-readPixiJsBundle :: IO BL.ByteString
-readPixiJsBundle = do
-    path <- resolvePixiJsBundlePath
-    result <- try (BL.readFile path) :: IO (Either SomeException BL.ByteString)
-    case result of
-        Right bs -> pure bs
-        Left _ -> do
-            hPutStrLn stderr $ "Error: Could not read PixiJS bundle at: " <> path
-            hPutStrLn stderr "Set DIAGRAMS_CANVAS_JSON_WEB_DIR to the directory containing the built JS library."
-            hPutStrLn stderr "To build it: cd diagrams-canvas-json-web && npm run build:bundle-pixi"
-            exitFailure
-
--- | CLI commands
 data Command
     = ToJson !FilePath
-    | View !FilePath !Int
     | OutlineToJson !FilePath
-    | OutlineView !FilePath !Int
     | CompositeToJson !FilePath !FilePath !Bool
-    | CompositeView !FilePath !FilePath !Bool !Int
     | ClipToJson !FilePath !FilePath
-    | ClipView !FilePath !FilePath !Int
     | BoardToJson !FilePath
-    | BoardView !FilePath !Int
-    | ViewPixi !FilePath !Int
-    | BoardViewPixi !FilePath !Int
-    | GridView ![FilePath] !Int
-    | GridViewPixi ![FilePath] !Int
-    | StackView ![FilePath] !Int
-    | StackViewPixi ![FilePath] !Int
+    | LayersToJson ![FilePath]
 
 commandParser :: ParserInfo Command
 commandParser =
     info
         (commands <**> helper)
         ( fullDesc
-            <> progDesc "Convert and view gerber files using diagrams-canvas-json"
+            <> progDesc "Convert gerber files to canvas JSON. Pipe into diagrams-canvas-json-viewer to view."
         )
   where
     commands =
         subparser
             ( command "to-json" (info toJsonCmd (progDesc "Convert a gerber file to canvas JSON on stdout"))
-                <> command "view" (info viewCmd (progDesc "View a gerber file in the browser via a local HTTP server"))
                 <> command "outline-to-json" (info outlineToJsonCmd (progDesc "Convert an outline gerber to a filled shape as canvas JSON"))
-                <> command "outline-view" (info outlineViewCmd (progDesc "View an outline gerber as a filled shape in the browser"))
                 <> command "composite-to-json" (info compositeToJsonCmd (progDesc "Composite base layer with inverted overlay to canvas JSON on stdout"))
-                <> command "composite-view" (info compositeViewCmd (progDesc "View base layer with inverted overlay in the browser"))
                 <> command "clip-to-json" (info clipToJsonCmd (progDesc "Clip a gerber layer to an outline shape as canvas JSON"))
-                <> command "clip-view" (info clipViewCmd (progDesc "View a gerber layer clipped to an outline shape in the browser"))
                 <> command "board-to-json" (info boardToJsonCmd (progDesc "Render board view from gerber layers to JSON on stdout"))
-                <> command "board-view" (info boardViewCmd (progDesc "View board rendering from gerber layers in the browser"))
-                <> command "view-pixi" (info viewPixiCmd (progDesc "View a gerber file using PixiJS WebGL viewer"))
-                <> command "board-view-pixi" (info boardViewPixiCmd (progDesc "View board rendering using PixiJS WebGL viewer"))
-                <> command "grid-view" (info gridViewCmd (progDesc "View multiple gerber layers in an NxM grid"))
-                <> command "grid-view-pixi" (info gridViewPixiCmd (progDesc "View multiple gerber layers in an NxM grid using PixiJS"))
-                <> command "stack-view" (info stackViewCmd (progDesc "View stacked gerber layers with toggleable legend"))
-                <> command "stack-view-pixi" (info stackViewPixiCmd (progDesc "View stacked gerber layers with toggleable legend using PixiJS"))
+                <> command "layers-to-json" (info layersToJsonCmd (progDesc "Render multiple gerber files as a layer array JSON (for viewer grid / stack layouts)"))
             )
 
     toJsonCmd =
         ToJson
             <$> argument str (metavar "GERBER_FILE" <> help "Path to gerber file")
 
-    viewCmd =
-        View
-            <$> argument str (metavar "GERBER_FILE" <> help "Path to gerber file")
-            <*> portOpt
-
     outlineToJsonCmd =
         OutlineToJson
             <$> argument str (metavar "GERBER_FILE" <> help "Path to outline gerber file")
-
-    outlineViewCmd =
-        OutlineView
-            <$> argument str (metavar "GERBER_FILE" <> help "Path to outline gerber file")
-            <*> portOpt
 
     compositeToJsonCmd =
         CompositeToJson
@@ -159,64 +70,19 @@ commandParser =
             <*> argument str (metavar "OVERLAY" <> help "Overlay gerber layer (will be inverted)")
             <*> outlineFlag
 
-    compositeViewCmd =
-        CompositeView
-            <$> argument str (metavar "BASE" <> help "Base gerber layer")
-            <*> argument str (metavar "OVERLAY" <> help "Overlay gerber layer (will be inverted)")
-            <*> outlineFlag
-            <*> portOpt
-
     clipToJsonCmd =
         ClipToJson
             <$> argument str (metavar "CONTENT" <> help "Gerber layer to clip")
             <*> argument str (metavar "OUTLINE" <> help "Outline gerber (defines visible area)")
 
-    clipViewCmd =
-        ClipView
-            <$> argument str (metavar "CONTENT" <> help "Gerber layer to clip")
-            <*> argument str (metavar "OUTLINE" <> help "Outline gerber (defines visible area)")
-            <*> portOpt
-
     boardToJsonCmd =
         BoardToJson
             <$> argument str (metavar "SPEC_FILE" <> help "Path to JSON board spec file")
 
-    boardViewCmd =
-        BoardView
-            <$> argument str (metavar "SPEC_FILE" <> help "Path to JSON board spec file")
-            <*> portOpt
+    layersToJsonCmd =
+        LayersToJson
+            <$> some (argument str (metavar "GERBER_FILES..." <> help "Gerber files to render as named layers"))
 
-    viewPixiCmd =
-        ViewPixi
-            <$> argument str (metavar "GERBER_FILE" <> help "Path to gerber file")
-            <*> portOpt
-
-    boardViewPixiCmd =
-        BoardViewPixi
-            <$> argument str (metavar "SPEC_FILE" <> help "Path to JSON board spec file")
-            <*> portOpt
-
-    gridViewCmd =
-        GridView
-            <$> some (argument str (metavar "GERBER_FILES..." <> help "Gerber files to display in grid"))
-            <*> portOpt
-
-    gridViewPixiCmd =
-        GridViewPixi
-            <$> some (argument str (metavar "GERBER_FILES..." <> help "Gerber files to display in grid"))
-            <*> portOpt
-
-    stackViewCmd =
-        StackView
-            <$> some (argument str (metavar "GERBER_FILES..." <> help "Gerber files to stack"))
-            <*> portOpt
-
-    stackViewPixiCmd =
-        StackViewPixi
-            <$> some (argument str (metavar "GERBER_FILES..." <> help "Gerber files to stack"))
-            <*> portOpt
-
-    portOpt = option auto (long "port" <> short 'p' <> value 3000 <> metavar "PORT" <> help "Port to serve on (default: 3000)")
     outlineFlag = switch (long "outline" <> help "Treat base layer as an outline (fill the path instead of stroking)")
 
 main :: IO ()
@@ -224,21 +90,11 @@ main = do
     cmd <- execParser commandParser
     case cmd of
         ToJson filePath -> runToJson filePath
-        View filePath port -> runView filePath port
         OutlineToJson filePath -> runOutlineToJson filePath
-        OutlineView filePath port -> runOutlineView filePath port
         CompositeToJson basePath overlayPath outline -> runCompositeToJson basePath overlayPath outline
-        CompositeView basePath overlayPath outline port -> runCompositeView basePath overlayPath outline port
         ClipToJson contentPath outlinePath -> runClipToJson contentPath outlinePath
-        ClipView contentPath outlinePath port -> runClipView contentPath outlinePath port
         BoardToJson specPath -> runBoardToJson specPath
-        BoardView specPath port -> runBoardView specPath port
-        ViewPixi filePath port -> runViewPixi filePath port
-        BoardViewPixi specPath port -> runBoardViewPixi specPath port
-        GridView files port -> runGridView files port
-        GridViewPixi files port -> runGridViewPixi files port
-        StackView files port -> runStackView files port
-        StackViewPixi files port -> runStackViewPixi files port
+        LayersToJson files -> runLayersToJson files
 
 runToJson :: FilePath -> IO ()
 runToJson filePath = do
@@ -249,16 +105,6 @@ runToJson filePath = do
             exitFailure
         Right diagram ->
             BL.putStr (Aeson.encode diagram <> "\n")
-
-runView :: FilePath -> Int -> IO ()
-runView filePath port = do
-    src <- T.readFile filePath
-    case renderGerber defaultRenderOptions src of
-        Left err -> do
-            hPutStrLn stderr $ "Error: " <> err
-            exitFailure
-        Right diagram ->
-            serveViewer (T.pack filePath) diagram port
 
 -- | Black fill colour for outlines
 outlineColour :: (Double, Double, Double, Double)
@@ -274,16 +120,6 @@ runOutlineToJson filePath = do
         Right diagram ->
             BL.putStr (Aeson.encode diagram <> "\n")
 
-runOutlineView :: FilePath -> Int -> IO ()
-runOutlineView filePath port = do
-    src <- T.readFile filePath
-    case renderGerberOutline defaultRenderOptions outlineColour src of
-        Left err -> do
-            hPutStrLn stderr $ "Error: " <> err
-            exitFailure
-        Right diagram ->
-            serveViewer (T.pack filePath <> " (outline)") diagram port
-
 runCompositeToJson :: FilePath -> FilePath -> Bool -> IO ()
 runCompositeToJson basePath overlayPath outline = do
     baseSrc <- T.readFile basePath
@@ -294,20 +130,6 @@ runCompositeToJson basePath overlayPath outline = do
             exitFailure
         Right diagram ->
             BL.putStr (Aeson.encode diagram <> "\n")
-
-runCompositeView :: FilePath -> FilePath -> Bool -> Int -> IO ()
-runCompositeView basePath overlayPath outline port = do
-    baseSrc <- T.readFile basePath
-    overlaySrc <- T.readFile overlayPath
-    case compositeGerbers outline baseSrc overlaySrc of
-        Left err -> do
-            hPutStrLn stderr $ "Error: " <> err
-            exitFailure
-        Right diagram -> do
-            let name = T.pack basePath <> " + inverted " <> T.pack overlayPath
-            putStrLn $ "  Base: " <> basePath <> (if outline then " (outline)" else "")
-            putStrLn $ "  Overlay (inverted): " <> overlayPath
-            serveViewer name diagram port
 
 compositeGerbers :: Bool -> T.Text -> T.Text -> Either String CanvasDiagram
 compositeGerbers outline baseSrc overlaySrc = do
@@ -329,94 +151,11 @@ runClipToJson contentPath outlinePath = do
         Right diagram ->
             BL.putStr (Aeson.encode diagram <> "\n")
 
-runClipView :: FilePath -> FilePath -> Int -> IO ()
-runClipView contentPath outlinePath port = do
-    contentSrc <- T.readFile contentPath
-    outlineSrc <- T.readFile outlinePath
-    case clipGerbers contentSrc outlineSrc of
-        Left err -> do
-            hPutStrLn stderr $ "Error: " <> err
-            exitFailure
-        Right diagram -> do
-            let name = T.pack contentPath <> " clipped to " <> T.pack outlinePath
-            putStrLn $ "  Content: " <> contentPath
-            putStrLn $ "  Outline: " <> outlinePath
-            serveViewer name diagram port
-
 clipGerbers :: T.Text -> T.Text -> Either String CanvasDiagram
 clipGerbers contentSrc outlineSrc = do
     content <- renderGerberRaw defaultRenderOptions contentSrc
     outline <- renderGerberRaw defaultRenderOptions outlineSrc
     Right $ clipToOutline content outline
-
-serveViewer :: T.Text -> CanvasDiagram -> Int -> IO ()
-serveViewer name diagram port = do
-    let jsonBytes = Aeson.encode diagram
-    jsBundle <- readJsBundle
-    putStrLn $ "Serving gerber viewer at http://localhost:" <> show port
-    scotty port $ do
-        get "/" $ do
-            setHeader "Content-Type" "text/html; charset=utf-8"
-            raw . BL.fromStrict . TE.encodeUtf8 $ viewerHtml name
-
-        get "/api/gerber/json" $ do
-            setHeader "Content-Type" "application/json"
-            raw jsonBytes
-
-        get "/lib/diagrams-canvas-json-web.js" $ do
-            setHeader "Content-Type" "application/javascript"
-            raw jsBundle
-
-viewerHtml :: T.Text -> T.Text
-viewerHtml name =
-    T.unlines
-        [ "<!DOCTYPE html>"
-        , "<html><head>"
-        , "<meta charset=\"utf-8\">"
-        , "<title>Gerber Viewer - " <> escapeHtml name <> "</title>"
-        , "<style>"
-        , viewerCss
-        , "</style>"
-        , "</head><body>"
-        , "<h1>" <> escapeHtml name <> "</h1>"
-        , "<div id=\"wrap\"></div>"
-        , "<div id=\"error\"></div>"
-        , "<script src=\"/lib/diagrams-canvas-json-web.js\"></script>"
-        , "<script>"
-        , "async function main() {"
-        , "  const resp = await fetch('/api/gerber/json');"
-        , "  if (!resp.ok) throw new Error('HTTP ' + resp.status);"
-        , "  const diagram = await resp.json();"
-        , "  DiagramsCanvasJson.createViewer({"
-        , "    container: document.getElementById('wrap'),"
-        , "    bounds: diagram.bounds,"
-        , "    layers: [{ color: [0,0,0,1], commands: diagram.commands }],"
-        , "  });"
-        , "}"
-        , "main().catch(e => {"
-        , "  document.getElementById('error').textContent = 'Error: ' + e.message;"
-        , "});"
-        , "</script>"
-        , "</body></html>"
-        ]
-
--- | Shared CSS for all viewer pages.
-viewerCss :: T.Text
-viewerCss =
-    T.unlines
-        [ "* { margin: 0; padding: 0; box-sizing: border-box; }"
-        , "html, body { height: 100%; overflow: hidden; background: #fff;"
-        , "  font-family: system-ui, sans-serif; color: #333; }"
-        , "body { display: flex; flex-direction: column; }"
-        , "h1 { font-size: 1rem; padding: 0.4rem 0.8rem; background: #f5f5f5;"
-        , "  border-bottom: 1px solid #ddd; flex-shrink: 0; }"
-        , "#wrap { flex: 1; position: relative; overflow: hidden; }"
-        , "#error { color: #cc0000; position: absolute; top: 50%; left: 50%;"
-        , "  transform: translate(-50%, -50%); }"
-        ]
-
-escapeHtml :: T.Text -> T.Text
-escapeHtml = T.replace "&" "&amp;" . T.replace "<" "&lt;" . T.replace ">" "&gt;" . T.replace "\"" "&quot;"
 
 --------------------------------------------------------------------------------
 -- Board rendering
@@ -431,16 +170,6 @@ runBoardToJson specPath = do
             exitFailure
         Right mld ->
             BL.putStr (Aeson.encode mld <> "\n")
-
-runBoardView :: FilePath -> Int -> IO ()
-runBoardView specPath port = do
-    result <- loadBoard specPath
-    case result of
-        Left err -> do
-            hPutStrLn stderr $ "Error: " <> err
-            exitFailure
-        Right mld ->
-            serveBoardViewer (T.pack specPath) mld port
 
 {- | Load a board spec, read all referenced gerber files, and build
 the board diagram.
@@ -485,204 +214,18 @@ loadBoard specPath = do
                     Left err -> return (Left $ "Failed to parse " <> absPath <> ": " <> err)
                     Right diagram -> return (Right (key, diagram))
 
-serveBoardViewer :: T.Text -> MultiLayerDiagram -> Int -> IO ()
-serveBoardViewer name mld port = do
-    let jsonBytes = Aeson.encode mld
-    jsBundle <- readJsBundle
-    putStrLn $ "Serving board viewer at http://localhost:" <> show port
-    scotty port $ do
-        get "/" $ do
-            setHeader "Content-Type" "text/html; charset=utf-8"
-            raw . BL.fromStrict . TE.encodeUtf8 $ boardViewerHtml name
-
-        get "/api/gerber/json" $ do
-            setHeader "Content-Type" "application/json"
-            raw jsonBytes
-
-        get "/lib/diagrams-canvas-json-web.js" $ do
-            setHeader "Content-Type" "application/javascript"
-            raw jsBundle
-
-boardViewerHtml :: T.Text -> T.Text
-boardViewerHtml name =
-    T.unlines
-        [ "<!DOCTYPE html>"
-        , "<html><head>"
-        , "<meta charset=\"utf-8\">"
-        , "<title>Board Viewer - " <> escapeHtml name <> "</title>"
-        , "<style>"
-        , viewerCss
-        , "</style>"
-        , "</head><body>"
-        , "<h1>" <> escapeHtml name <> "</h1>"
-        , "<div id=\"wrap\"></div>"
-        , "<div id=\"error\"></div>"
-        , "<script src=\"/lib/diagrams-canvas-json-web.js\"></script>"
-        , "<script>"
-        , "async function main() {"
-        , "  const resp = await fetch('/api/gerber/json');"
-        , "  if (!resp.ok) throw new Error('HTTP ' + resp.status);"
-        , "  const diagram = await resp.json();"
-        , "  DiagramsCanvasJson.createViewer({"
-        , "    container: document.getElementById('wrap'),"
-        , "    bounds: diagram.bounds,"
-        , "    layers: diagram.layers,"
-        , "  });"
-        , "}"
-        , "main().catch(e => {"
-        , "  document.getElementById('error').textContent = 'Error: ' + e.message;"
-        , "});"
-        , "</script>"
-        , "</body></html>"
-        ]
-
 --------------------------------------------------------------------------------
--- Single-layer PixiJS viewer
+-- Layers (for viewer grid / stack layouts)
 --------------------------------------------------------------------------------
 
-runViewPixi :: FilePath -> Int -> IO ()
-runViewPixi filePath port = do
-    src <- T.readFile filePath
-    case renderGerber defaultRenderOptions src of
-        Left err -> do
-            hPutStrLn stderr $ "Error: " <> err
-            exitFailure
-        Right diagram ->
-            serveViewerPixi (T.pack filePath) diagram port
-
-serveViewerPixi :: T.Text -> CanvasDiagram -> Int -> IO ()
-serveViewerPixi name diagram port = do
-    let jsonBytes = Aeson.encode diagram
-    pixiBundle <- readPixiJsBundle
-    putStrLn $ "Serving PixiJS viewer at http://localhost:" <> show port
-    scotty port $ do
-        get "/" $ do
-            setHeader "Content-Type" "text/html; charset=utf-8"
-            raw . BL.fromStrict . TE.encodeUtf8 $ viewerPixiHtml name
-
-        get "/api/gerber/json" $ do
-            setHeader "Content-Type" "application/json"
-            raw jsonBytes
-
-        get "/lib/diagrams-canvas-json-web-pixi.js" $ do
-            setHeader "Content-Type" "application/javascript"
-            raw pixiBundle
-
-viewerPixiHtml :: T.Text -> T.Text
-viewerPixiHtml name =
-    T.unlines
-        [ "<!DOCTYPE html>"
-        , "<html><head>"
-        , "<meta charset=\"utf-8\">"
-        , "<title>Gerber Viewer (PixiJS) - " <> escapeHtml name <> "</title>"
-        , "<style>"
-        , viewerCss
-        , "</style>"
-        , "</head><body>"
-        , "<h1>" <> escapeHtml name <> " (PixiJS)</h1>"
-        , "<div id=\"wrap\"></div>"
-        , "<div id=\"error\"></div>"
-        , "<script src=\"/lib/diagrams-canvas-json-web-pixi.js\"></script>"
-        , "<script>"
-        , "async function main() {"
-        , "  const resp = await fetch('/api/gerber/json');"
-        , "  if (!resp.ok) throw new Error('HTTP ' + resp.status);"
-        , "  const diagram = await resp.json();"
-        , "  await DiagramsCanvasJsonPixi.createPixiViewer({"
-        , "    container: document.getElementById('wrap'),"
-        , "    bounds: diagram.bounds,"
-        , "    layers: [{ color: [0,0,0,1], commands: diagram.commands }],"
-        , "  });"
-        , "}"
-        , "main().catch(e => {"
-        , "  document.getElementById('error').textContent = 'Error: ' + e.message;"
-        , "});"
-        , "</script>"
-        , "</body></html>"
-        ]
-
---------------------------------------------------------------------------------
--- Board rendering (PixiJS viewer)
---------------------------------------------------------------------------------
-
-runBoardViewPixi :: FilePath -> Int -> IO ()
-runBoardViewPixi specPath port = do
-    result <- loadBoard specPath
-    case result of
-        Left err -> do
-            hPutStrLn stderr $ "Error: " <> err
-            exitFailure
-        Right mld ->
-            serveBoardViewerPixi (T.pack specPath) mld port
-
-serveBoardViewerPixi :: T.Text -> MultiLayerDiagram -> Int -> IO ()
-serveBoardViewerPixi name mld port = do
-    let jsonBytes = Aeson.encode mld
-    pixiBundle <- readPixiJsBundle
-    putStrLn $ "Serving PixiJS board viewer at http://localhost:" <> show port
-    scotty port $ do
-        get "/" $ do
-            setHeader "Content-Type" "text/html; charset=utf-8"
-            raw . BL.fromStrict . TE.encodeUtf8 $ boardViewerPixiHtml name
-
-        get "/api/gerber/json" $ do
-            setHeader "Content-Type" "application/json"
-            raw jsonBytes
-
-        get "/lib/diagrams-canvas-json-web-pixi.js" $ do
-            setHeader "Content-Type" "application/javascript"
-            raw pixiBundle
-
-boardViewerPixiHtml :: T.Text -> T.Text
-boardViewerPixiHtml name =
-    T.unlines
-        [ "<!DOCTYPE html>"
-        , "<html><head>"
-        , "<meta charset=\"utf-8\">"
-        , "<title>Board Viewer (PixiJS) - " <> escapeHtml name <> "</title>"
-        , "<style>"
-        , viewerCss
-        , "</style>"
-        , "</head><body>"
-        , "<h1>" <> escapeHtml name <> " (PixiJS)</h1>"
-        , "<div id=\"wrap\"></div>"
-        , "<div id=\"error\"></div>"
-        , "<script src=\"/lib/diagrams-canvas-json-web-pixi.js\"></script>"
-        , "<script>"
-        , "async function main() {"
-        , "  const resp = await fetch('/api/gerber/json');"
-        , "  if (!resp.ok) throw new Error('HTTP ' + resp.status);"
-        , "  const diagram = await resp.json();"
-        , "  await DiagramsCanvasJsonPixi.createPixiViewer({"
-        , "    container: document.getElementById('wrap'),"
-        , "    bounds: diagram.bounds,"
-        , "    layers: diagram.layers,"
-        , "  });"
-        , "}"
-        , "main().catch(e => {"
-        , "  document.getElementById('error').textContent = 'Error: ' + e.message;"
-        , "});"
-        , "</script>"
-        , "</body></html>"
-        ]
-
---------------------------------------------------------------------------------
--- Grid view
---------------------------------------------------------------------------------
-
-runGridView :: [FilePath] -> Int -> IO ()
-runGridView files port = do
-    layers <- loadGridLayers files
-    serveGridViewer layers port
-
-runGridViewPixi :: [FilePath] -> Int -> IO ()
-runGridViewPixi files port = do
-    layers <- loadGridLayers files
-    serveGridViewerPixi layers port
+runLayersToJson :: [FilePath] -> IO ()
+runLayersToJson files = do
+    layers <- loadLayers files
+    BL.putStr (encodeLayers layers <> "\n")
 
 -- | Read and render each gerber file, returning named diagrams.
-loadGridLayers :: [FilePath] -> IO [(T.Text, CanvasDiagram)]
-loadGridLayers files = do
+loadLayers :: [FilePath] -> IO [(T.Text, CanvasDiagram)]
+loadLayers files = do
     results <- mapM renderOne files
     case sequence results of
         Left err -> do
@@ -699,9 +242,9 @@ loadGridLayers files = do
                     Left err -> pure . Left $ "Failed to parse " <> fp <> ": " <> err
                     Right cd -> pure . Right $ (T.pack (takeFileName fp), cd)
 
--- | Encode grid layers as a JSON array of {name, bounds, commands}.
-encodeGridLayers :: [(T.Text, CanvasDiagram)] -> BL.ByteString
-encodeGridLayers layers = Aeson.encode $ map encodeOne layers
+-- | Encode layers as a JSON array of @{name, bounds, commands}@.
+encodeLayers :: [(T.Text, CanvasDiagram)] -> BL.ByteString
+encodeLayers layers = Aeson.encode $ map encodeOne layers
   where
     encodeOne (name, cd) =
         let jp = cdPrecision cd
@@ -710,474 +253,3 @@ encodeGridLayers layers = Aeson.encode $ map encodeOne layers
                 , "bounds" Aeson..= encodeBBox jp (cdBounds cd)
                 , "commands" Aeson..= map (encodeCmd jp) (cdCommands cd)
                 ]
-
-serveGridViewer :: [(T.Text, CanvasDiagram)] -> Int -> IO ()
-serveGridViewer layers port = do
-    let jsonBytes = encodeGridLayers layers
-    jsBundle <- readJsBundle
-    putStrLn $ "Serving grid viewer at http://localhost:" <> show port
-    scotty port $ do
-        get "/" $ do
-            setHeader "Content-Type" "text/html; charset=utf-8"
-            raw . BL.fromStrict . TE.encodeUtf8 $ gridViewerHtml False
-
-        get "/api/gerber/json" $ do
-            setHeader "Content-Type" "application/json"
-            raw jsonBytes
-
-        get "/lib/diagrams-canvas-json-web.js" $ do
-            setHeader "Content-Type" "application/javascript"
-            raw jsBundle
-
-serveGridViewerPixi :: [(T.Text, CanvasDiagram)] -> Int -> IO ()
-serveGridViewerPixi layers port = do
-    let jsonBytes = encodeGridLayers layers
-    pixiBundle <- readPixiJsBundle
-    putStrLn $ "Serving PixiJS grid viewer at http://localhost:" <> show port
-    scotty port $ do
-        get "/" $ do
-            setHeader "Content-Type" "text/html; charset=utf-8"
-            raw . BL.fromStrict . TE.encodeUtf8 $ gridViewerHtml True
-
-        get "/api/gerber/json" $ do
-            setHeader "Content-Type" "application/json"
-            raw jsonBytes
-
-        get "/lib/diagrams-canvas-json-web-pixi.js" $ do
-            setHeader "Content-Type" "application/javascript"
-            raw pixiBundle
-
-gridViewerHtml :: Bool -> T.Text
-gridViewerHtml isPixi =
-    let (libScript, createCall) =
-            if isPixi
-                then
-                    ( "/lib/diagrams-canvas-json-web-pixi.js"
-                    , "await DiagramsCanvasJsonPixi.createPixiViewer"
-                    )
-                else
-                    ( "/lib/diagrams-canvas-json-web.js"
-                    , "DiagramsCanvasJson.createViewer"
-                    )
-        suffix = if isPixi then " (PixiJS)" else ""
-     in T.unlines
-            [ "<!DOCTYPE html>"
-            , "<html><head>"
-            , "<meta charset=\"utf-8\">"
-            , "<title>Gerber Grid Viewer" <> suffix <> "</title>"
-            , "<style>"
-            , viewerCss
-            , "</style>"
-            , "</head><body>"
-            , "<h1>Gerber Grid" <> suffix <> "</h1>"
-            , "<div id=\"wrap\"></div>"
-            , "<div id=\"error\"></div>"
-            , "<script src=\"" <> libScript <> "\"></script>"
-            , "<script>"
-            , "async function main() {"
-            , "  const resp = await fetch('/api/gerber/json');"
-            , "  if (!resp.ok) throw new Error('HTTP ' + resp.status);"
-            , "  const data = await resp.json();"
-            , gridLayoutJs createCall
-            , "}"
-            , "main().catch(e => {"
-            , "  document.getElementById('error').textContent = 'Error: ' + e.message;"
-            , "});"
-            , "</script>"
-            , "</body></html>"
-            ]
-
-{- | Shared JavaScript for computing the NxM grid layout and creating
-the viewer with interleaved CommandLayer / MaskLayer / CustomLayer.
--}
-gridLayoutJs :: T.Text -> T.Text
-gridLayoutJs createCall =
-    T.unlines
-        [ "  var n = data.length;"
-        , "  if (n === 0) return;"
-        , ""
-        , "  // Find max bounds across all layers for uniform cell sizing"
-        , "  var maxW = 0, maxH = 0;"
-        , "  for (var i = 0; i < n; i++) {"
-        , "    var b = data[i].bounds;"
-        , "    maxW = Math.max(maxW, b.maxX - b.minX);"
-        , "    maxH = Math.max(maxH, b.maxY - b.minY);"
-        , "  }"
-        , ""
-        , "  // Grid dimensions"
-        , "  var cols = Math.ceil(Math.sqrt(n));"
-        , "  var rows = Math.ceil(n / cols);"
-        , ""
-        , "  // Layout constants (diagram units)"
-        , "  var pad = maxW * 0.08;"
-        , "  var titleH = maxH * 0.08;"
-        , "  var cellW = maxW + pad * 2;"
-        , "  var cellH = maxH + titleH + pad * 2;"
-        , "  var gap = maxW * 0.06;"
-        , ""
-        , "  var layers = [];"
-        , "  var labels = [];"
-        , ""
-        , "  for (var i = 0; i < n; i++) {"
-        , "    var row = Math.floor(i / cols);"
-        , "    var col = i % cols;"
-        , "    // Cell origin (bottom-left, Y-up)"
-        , "    var cx = col * (cellW + gap);"
-        , "    var cy = (rows - 1 - row) * (cellH + gap);"
-        , ""
-        , "    // White background (CommandLayer)"
-        , "    layers.push({"
-        , "      commands: ["
-        , "        ['B'], ['M', cx, cy], ['L', cx + cellW, cy],"
-        , "        ['L', cx + cellW, cy + cellH], ['L', cx, cy + cellH],"
-        , "        ['Z'], ['F', 255, 255, 255, 1]"
-        , "      ]"
-        , "    });"
-        , ""
-        , "    // Gerber content (MaskLayer, translated to cell center)"
-        , "    var b = data[i].bounds;"
-        , "    var gcx = (b.minX + b.maxX) / 2;"
-        , "    var gcy = (b.minY + b.maxY) / 2;"
-        , "    var contentCx = cx + cellW / 2;"
-        , "    var contentCy = cy + pad + (cellH - titleH - pad * 2) / 2;"
-        , "    var ox = contentCx - gcx;"
-        , "    var oy = contentCy - gcy;"
-        , ""
-        , "    layers.push({"
-        , "      color: [0, 0, 0, 1],"
-        , "      commands: [['S'], ['T', 1, 0, 0, 1, ox, oy]]"
-        , "        .concat(data[i].commands)"
-        , "        .concat([['R']])"
-        , "    });"
-        , ""
-        , "    labels.push({ text: data[i].name,"
-        , "      x: cx + cellW / 2, y: cy + cellH - pad * 0.5 });"
-        , "  }"
-        , ""
-        , "  // Title labels (CustomLayer)"
-        , "  var fontSize = titleH * 0.7;"
-        , "  layers.push({"
-        , "    render: function(ctx, scale) {"
-        , "      for (var i = 0; i < labels.length; i++) {"
-        , "        var lbl = labels[i];"
-        , "        ctx.save();"
-        , "        ctx.translate(lbl.x, lbl.y);"
-        , "        ctx.scale(1, -1);"
-        , "        ctx.font = fontSize + 'px system-ui, sans-serif';"
-        , "        ctx.textAlign = 'center';"
-        , "        ctx.textBaseline = 'top';"
-        , "        ctx.fillStyle = '#333';"
-        , "        ctx.fillText(lbl.text, 0, 0);"
-        , "        ctx.restore();"
-        , "      }"
-        , "    }"
-        , "  });"
-        , ""
-        , "  // Overall bounds"
-        , "  var totalW = cols * cellW + (cols - 1) * gap;"
-        , "  var totalH = rows * cellH + (rows - 1) * gap;"
-        , "  var bounds = { minX: -gap, minY: -gap,"
-        , "    maxX: totalW + gap, maxY: totalH + gap };"
-        , ""
-        , "  " <> createCall <> "({"
-        , "    container: document.getElementById('wrap'),"
-        , "    bounds: bounds,"
-        , "    layers: layers,"
-        , "  });"
-        ]
-
---------------------------------------------------------------------------------
--- Stack view
---------------------------------------------------------------------------------
-
-runStackView :: [FilePath] -> Int -> IO ()
-runStackView files port = do
-    layers <- loadGridLayers files
-    let jsonBytes = encodeGridLayers layers
-    jsBundle <- readJsBundle
-    putStrLn $ "Serving stack viewer at http://localhost:" <> show port
-    scotty port $ do
-        get "/" $ do
-            setHeader "Content-Type" "text/html; charset=utf-8"
-            raw . BL.fromStrict . TE.encodeUtf8 $ stackViewerHtml False
-
-        get "/api/gerber/json" $ do
-            setHeader "Content-Type" "application/json"
-            raw jsonBytes
-
-        get "/lib/diagrams-canvas-json-web.js" $ do
-            setHeader "Content-Type" "application/javascript"
-            raw jsBundle
-
-runStackViewPixi :: [FilePath] -> Int -> IO ()
-runStackViewPixi files port = do
-    layers <- loadGridLayers files
-    let jsonBytes = encodeGridLayers layers
-    pixiBundle <- readPixiJsBundle
-    putStrLn $ "Serving PixiJS stack viewer at http://localhost:" <> show port
-    scotty port $ do
-        get "/" $ do
-            setHeader "Content-Type" "text/html; charset=utf-8"
-            raw . BL.fromStrict . TE.encodeUtf8 $ stackViewerHtml True
-
-        get "/api/gerber/json" $ do
-            setHeader "Content-Type" "application/json"
-            raw jsonBytes
-
-        get "/lib/diagrams-canvas-json-web-pixi.js" $ do
-            setHeader "Content-Type" "application/javascript"
-            raw pixiBundle
-
-stackViewerHtml :: Bool -> T.Text
-stackViewerHtml isPixi =
-    let (libScript, createCall) =
-            if isPixi
-                then
-                    ( "/lib/diagrams-canvas-json-web-pixi.js"
-                    , "await DiagramsCanvasJsonPixi.createPixiViewer"
-                    )
-                else
-                    ( "/lib/diagrams-canvas-json-web.js"
-                    , "DiagramsCanvasJson.createViewer"
-                    )
-        suffix = if isPixi then " (PixiJS)" else ""
-     in T.unlines
-            [ "<!DOCTYPE html>"
-            , "<html><head>"
-            , "<meta charset=\"utf-8\">"
-            , "<title>Gerber Stack Viewer" <> suffix <> "</title>"
-            , "<style>"
-            , viewerCss
-            , "</style>"
-            , "</head><body>"
-            , "<h1>Gerber Stack" <> suffix <> "</h1>"
-            , "<div id=\"wrap\"></div>"
-            , "<div id=\"error\"></div>"
-            , "<script src=\"" <> libScript <> "\"></script>"
-            , "<script>"
-            , "async function main() {"
-            , "  const resp = await fetch('/api/gerber/json');"
-            , "  if (!resp.ok) throw new Error('HTTP ' + resp.status);"
-            , "  const data = await resp.json();"
-            , stackLayoutJs createCall
-            , "}"
-            , "main().catch(e => {"
-            , "  document.getElementById('error').textContent = 'Error: ' + e.message;"
-            , "});"
-            , "</script>"
-            , "</body></html>"
-            ]
-
-stackLayoutJs :: T.Text -> T.Text
-stackLayoutJs createCall =
-    T.unlines
-        [ "  var n = data.length;"
-        , "  if (n === 0) return;"
-        , ""
-        , "  // Distinct colors for layers (HSL wheel)"
-        , "  var colors = [];"
-        , "  for (var i = 0; i < n; i++) {"
-        , "    var hue = (i * 360 / n) % 360;"
-        , "    var rad = hue * Math.PI / 180;"
-        , "    // Convert HSL(hue, 80%, 45%) to RGB 0-255"
-        , "    var s = 0.8, l = 0.45;"
-        , "    var c = (1 - Math.abs(2 * l - 1)) * s;"
-        , "    var x = c * (1 - Math.abs((hue / 60) % 2 - 1));"
-        , "    var m = l - c / 2;"
-        , "    var r1, g1, b1;"
-        , "    if (hue < 60) { r1=c; g1=x; b1=0; }"
-        , "    else if (hue < 120) { r1=x; g1=c; b1=0; }"
-        , "    else if (hue < 180) { r1=0; g1=c; b1=x; }"
-        , "    else if (hue < 240) { r1=0; g1=x; b1=c; }"
-        , "    else if (hue < 300) { r1=x; g1=0; b1=c; }"
-        , "    else { r1=c; g1=0; b1=x; }"
-        , "    colors.push(["
-        , "      Math.round((r1 + m) * 255),"
-        , "      Math.round((g1 + m) * 255),"
-        , "      Math.round((b1 + m) * 255), 0.7]);"
-        , "  }"
-        , ""
-        , "  // Union of all bounds"
-        , "  var ub = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };"
-        , "  for (var i = 0; i < n; i++) {"
-        , "    var b = data[i].bounds;"
-        , "    ub.minX = Math.min(ub.minX, b.minX);"
-        , "    ub.minY = Math.min(ub.minY, b.minY);"
-        , "    ub.maxX = Math.max(ub.maxX, b.maxX);"
-        , "    ub.maxY = Math.max(ub.maxY, b.maxY);"
-        , "  }"
-        , "  var contentW = ub.maxX - ub.minX;"
-        , "  var contentH = ub.maxY - ub.minY;"
-        , ""
-        , "  // Legend layout to the left of the content"
-        , "  var legendItemH = contentH * 0.04;"
-        , "  var legendGap = legendItemH * 0.3;"
-        , "  var legendW = contentW * 0.25;"
-        , "  var legendPad = contentW * 0.03;"
-        , "  var legendX = ub.minX - legendW - legendPad;"
-        , "  // Space for show/hide buttons above legend items"
-        , "  var btnH = legendItemH;"
-        , "  var btnGap = legendGap;"
-        , "  var btnRowH = btnH + btnGap * 2;"
-        , "  // Center legend + buttons vertically"
-        , "  var legendTotalH = n * legendItemH + (n - 1) * legendGap + btnRowH;"
-        , "  var legendTopY = ub.minY + contentH / 2 + legendTotalH / 2;"
-        , ""
-        , "  // Build layers array and legend metadata"
-        , "  var layers = [];"
-        , "  var maskLayers = []; // references to the MaskLayer objects"
-        , "  var legendItems = [];"
-        , ""
-        , "  // White background behind the gerber stack"
-        , "  var pad = contentW * 0.02;"
-        , "  layers.push({"
-        , "    commands: ["
-        , "      ['B'], ['M', ub.minX - pad, ub.minY - pad],"
-        , "      ['L', ub.maxX + pad, ub.minY - pad],"
-        , "      ['L', ub.maxX + pad, ub.maxY + pad],"
-        , "      ['L', ub.minX - pad, ub.maxY + pad],"
-        , "      ['Z'], ['F', 255, 255, 255, 1]"
-        , "    ]"
-        , "  });"
-        , ""
-        , "  for (var i = 0; i < n; i++) {"
-        , "    var ml = {"
-        , "      name: data[i].name,"
-        , "      color: colors[i],"
-        , "      commands: data[i].commands"
-        , "    };"
-        , "    layers.push(ml);"
-        , "    maskLayers.push(ml);"
-        , ""
-        , "    var iy = legendTopY - btnRowH - i * (legendItemH + legendGap);"
-        , "    legendItems.push({"
-        , "      text: data[i].name,"
-        , "      color: colors[i],"
-        , "      x: legendX,"
-        , "      y: iy,"
-        , "      w: legendW,"
-        , "      h: legendItemH,"
-        , "      index: i"
-        , "    });"
-        , "  }"
-        , ""
-        , "  // Button positions (Y-up, at the top of the legend)"
-        , "  var btnY = legendTopY;"
-        , "  var btnW = (legendW - btnGap) / 2;"
-        , "  var showAllBtn = { x: legendX, y: btnY, w: btnW, h: btnH };"
-        , "  var hideAllBtn = { x: legendX + btnW + btnGap, y: btnY, w: btnW, h: btnH };"
-        , ""
-        , "  // Legend (CustomLayer)"
-        , "  var fontSize = legendItemH * 0.65;"
-        , "  var checkSize = legendItemH * 0.5;"
-        , "  var btnFontSize = btnH * 0.55;"
-        , "  layers.push({"
-        , "    render: function(ctx, scale) {"
-        , "      // Show All / Hide All buttons"
-        , "      function drawBtn(btn, label) {"
-        , "        ctx.save();"
-        , "        ctx.translate(btn.x, btn.y);"
-        , "        ctx.scale(1, -1);"
-        , "        ctx.fillStyle = '#e8e8e8';"
-        , "        ctx.fillRect(0, 0, btn.w, btn.h);"
-        , "        ctx.strokeStyle = '#bbb';"
-        , "        ctx.lineWidth = btn.h * 0.04;"
-        , "        ctx.strokeRect(0, 0, btn.w, btn.h);"
-        , "        ctx.fillStyle = '#333';"
-        , "        ctx.font = btnFontSize + 'px system-ui, sans-serif';"
-        , "        ctx.textAlign = 'center';"
-        , "        ctx.textBaseline = 'middle';"
-        , "        ctx.fillText(label, btn.w / 2, btn.h / 2);"
-        , "        ctx.restore();"
-        , "      }"
-        , "      drawBtn(showAllBtn, 'Show All');"
-        , "      drawBtn(hideAllBtn, 'Hide All');"
-        , ""
-        , "      for (var i = 0; i < legendItems.length; i++) {"
-        , "        var it = legendItems[i];"
-        , "        var vis = maskLayers[it.index].visible !== false;"
-        , "        ctx.save();"
-        , "        ctx.translate(it.x, it.y);"
-        , "        ctx.scale(1, -1);"
-        , ""
-        , "        // Color swatch"
-        , "        var c = it.color;"
-        , "        ctx.fillStyle = 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + c[3] + ')';"
-        , "        ctx.fillRect(0, 0, checkSize, checkSize);"
-        , ""
-        , "        // Check mark if visible"
-        , "        if (vis) {"
-        , "          ctx.strokeStyle = '#fff';"
-        , "          ctx.lineWidth = checkSize * 0.15;"
-        , "          ctx.lineCap = 'round';"
-        , "          ctx.beginPath();"
-        , "          ctx.moveTo(checkSize * 0.2, checkSize * 0.5);"
-        , "          ctx.lineTo(checkSize * 0.45, checkSize * 0.75);"
-        , "          ctx.lineTo(checkSize * 0.8, checkSize * 0.25);"
-        , "          ctx.stroke();"
-        , "        }"
-        , ""
-        , "        // Layer name"
-        , "        ctx.fillStyle = vis ? '#333' : '#aaa';"
-        , "        ctx.font = fontSize + 'px system-ui, sans-serif';"
-        , "        ctx.textAlign = 'left';"
-        , "        ctx.textBaseline = 'middle';"
-        , "        ctx.fillText(it.text, checkSize + checkSize * 0.4, checkSize / 2);"
-        , ""
-        , "        ctx.restore();"
-        , "      }"
-        , "    }"
-        , "  });"
-        , ""
-        , "  // Bounds: include legend area and buttons"
-        , "  var bounds = {"
-        , "    minX: legendX - legendPad,"
-        , "    minY: Math.min(ub.minY - pad, legendTopY - legendTotalH - legendPad),"
-        , "    maxX: ub.maxX + pad,"
-        , "    maxY: Math.max(ub.maxY + pad, legendTopY + legendPad)"
-        , "  };"
-        , ""
-        , "  var viewer = " <> createCall <> "({"
-        , "    container: document.getElementById('wrap'),"
-        , "    bounds: bounds,"
-        , "    layers: layers,"
-        , "  });"
-        , ""
-        , "  // Click handler for legend toggle"
-        , "  document.getElementById('wrap').addEventListener('click', function(e) {"
-        , "    var rect = e.currentTarget.getBoundingClientRect();"
-        , "    var t = viewer.getTransform ? viewer.getTransform() : (viewer.then ? null : null);"
-        , "    if (!t) return;"
-        , "    // Convert click from CSS pixels to diagram space"
-        , "    var dx = (e.clientX - rect.left - t.tx) / t.scale;"
-        , "    var dy = -((e.clientY - rect.top - t.ty) / t.scale);"
-        , ""
-        , "    // Hit test: Show All / Hide All buttons"
-        , "    function hitBtn(btn) {"
-        , "      return dx >= btn.x && dx <= btn.x + btn.w &&"
-        , "             dy <= btn.y && dy >= btn.y - btn.h;"
-        , "    }"
-        , "    if (hitBtn(showAllBtn)) {"
-        , "      for (var j = 0; j < maskLayers.length; j++) maskLayers[j].visible = true;"
-        , "      viewer.render();"
-        , "      return;"
-        , "    }"
-        , "    if (hitBtn(hideAllBtn)) {"
-        , "      for (var j = 0; j < maskLayers.length; j++) maskLayers[j].visible = false;"
-        , "      viewer.render();"
-        , "      return;"
-        , "    }"
-        , ""
-        , "    // Hit test: legend items"
-        , "    for (var i = 0; i < legendItems.length; i++) {"
-        , "      var it = legendItems[i];"
-        , "      if (dx >= it.x && dx <= it.x + it.w &&"
-        , "          dy <= it.y && dy >= it.y - it.h) {"
-        , "        var ml = maskLayers[it.index];"
-        , "        ml.visible = ml.visible === false ? true : false;"
-        , "        viewer.render();"
-        , "        break;"
-        , "      }"
-        , "    }"
-        , "  });"
-        ]

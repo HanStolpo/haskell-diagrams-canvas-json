@@ -70,7 +70,7 @@
         };
 
         # Default package & app.
-        packages.default = self'.packages.diagrams-canvas-json;
+        packages.default = self'.packages.diagrams-canvas-json-dev;
 
         # Default shell.
         devShells.default = pkgs.mkShell {

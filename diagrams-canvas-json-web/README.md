@@ -43,10 +43,10 @@ just dev
 
 Or start them individually:
 
-1. Start the Haskell server (from project root):
+1. Start the Haskell dev server (from project root):
 
    ```bash
-   cabal run diagrams-canvas-json
+   cabal run diagrams-canvas-json-dev
    ```
 
 2. Start the web dev server:

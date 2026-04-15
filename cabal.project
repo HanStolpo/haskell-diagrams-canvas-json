@@ -1,5 +1,7 @@
 packages:
   ./diagrams-canvas-json
+  ./diagrams-canvas-json-dev
+  ./diagrams-canvas-json-viewer
   ./gerber-diagrams-canvas-json
 
 -- See: https://cabal.readthedocs.io/en/latest/nix-local-build.html#developing-multiple-packages

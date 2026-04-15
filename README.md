@@ -6,25 +6,30 @@ A diagrams backend that encodes drawings as JSON to be rendered in a browser usi
 
 ```
 diagrams-canvas-json/
-├── diagrams-canvas-json/       # Haskell library and development server
-│   ├── src/                    # Library source (diagrams backend)
-│   ├── exe/                    # Development server executable
+├── diagrams-canvas-json/          # Haskell library (diagrams backend)
+│   ├── src/
 │   └── diagrams-canvas-json.cabal
-├── diagrams-canvas-json-web/   # TypeScript/Canvas rendering library
-│   ├── src/lib/                # Library source (canvas renderer + viewer)
-│   └── dev/                    # Development frontend
-├── gerber-diagrams-canvas-json/ # Gerber PCB artwork to canvas JSON
-│   ├── src/                    # Library source (gerber rendering + compositing)
-│   ├── exe/                    # CLI tool (to-json, view, board-to-json, etc.)
-│   ├── data/                   # Test gerber and SVG reference data
+├── diagrams-canvas-json-dev/      # Haskell exe: dev web server for examples
+│   ├── exe/
+│   └── diagrams-canvas-json-dev.cabal
+├── diagrams-canvas-json-viewer/   # Haskell exe: browser viewer for pre-rendered JSON
+│   ├── exe/
+│   └── diagrams-canvas-json-viewer.cabal
+├── diagrams-canvas-json-web/      # TypeScript/Canvas rendering library
+│   ├── src/lib/                   # Library source (canvas renderer + viewer)
+│   └── dev/                       # Development frontend
+├── gerber-diagrams-canvas-json/   # Gerber PCB artwork to canvas JSON
+│   ├── src/                       # Library source (gerber rendering + compositing)
+│   ├── exe/                       # CLI tool (to-json, board-to-json, layers-to-json, …)
+│   ├── data/                      # Test gerber and SVG reference data
 │   └── gerber-diagrams-canvas-json.cabal
-├── cabal.project               # Cabal project config
-└── flake.nix                   # Nix flake for development environment
+├── cabal.project                  # Cabal project config
+└── flake.nix                      # Nix flake for development environment
 ```
 
 ## Packages
 
-### diagrams-canvas-json (Haskell)
+### diagrams-canvas-json (Haskell library)
 
 A diagrams backend that renders to compact JSON command arrays for Canvas execution. Features:
 
@@ -34,6 +39,31 @@ A diagrams backend that renders to compact JSON command arrays for Canvas execut
 - **Command optimization**: Consecutive Save/Restore groups sharing the same context are collapsed into set-only commands (`FS`, `KS`, `KSV`); transparent fills and strokes are stripped
 - **Configurable JSON precision**: Per-category decimal place control (coordinates, alpha, transforms, line widths, dashes, angles) using `Scientific` numbers to avoid IEEE 754 bloat
 - **Measure classification**: Line width and dashing measures are classified by probing `unmeasureAttrs` with different normalized-to-output scales, correctly handling `local`, `global`, `normalized`, `output`, and `atLeast` combinations
+
+### diagrams-canvas-json-dev (Haskell executable)
+
+Development web server exposing the `diagrams-canvas-json` backend alongside
+`diagrams-svg` for the TypeScript dev frontend. Serves SVG and Canvas JSON
+versions of the diagrams quickstart examples on port 8080.
+
+### diagrams-canvas-json-viewer (Haskell executable)
+
+Generic browser viewer for pre-rendered diagrams-canvas-json output. Reads
+JSON from a file or stdin and serves it in a Scotty-backed page using the
+bundled `diagrams-canvas-json-web` Canvas 2D or PixiJS renderer. Subcommands:
+
+- `single FILE` — a single `CanvasDiagram` rendered as one black layer
+- `board FILE` — a `MultiLayerDiagram` (e.g. the output of `board-to-json`)
+- `grid FILE` — a layer array rendered as an NxM grid
+- `stack FILE` — a layer array rendered as a toggleable stack with legend
+
+Each subcommand accepts `--pixi` (switch to PixiJS) and `--port`. If `FILE`
+is omitted or `-`, the viewer reads from stdin, so gerber output can be
+piped straight in:
+
+```bash
+gerber-diagrams-canvas-json board-to-json board.json | diagrams-canvas-json-viewer board --pixi
+```
 
 ### gerber-diagrams-canvas-json (Haskell)
 
@@ -45,7 +75,9 @@ Converts Gerber PCB artwork files to canvas JSON with post-processing for multi-
 - **Multi-layer board rendering**: Configurable layer stack with colors, outline modes, base color, and prepreg color (`BoardSpec`)
 - **Automatic JSON precision**: Coordinate precision derived from Gerber format spec and unit conversion
 
-CLI tool with commands: `to-json`, `view`, `view-pixi`, `outline-to-json`, `outline-view`, `composite-to-json`, `composite-view`, `clip-to-json`, `clip-view`, `board-to-json`, `board-view`, `board-view-pixi`.
+CLI tool with commands: `to-json`, `outline-to-json`, `composite-to-json`,
+`clip-to-json`, `board-to-json`, `layers-to-json`. All commands emit JSON on
+stdout — pipe into `diagrams-canvas-json-viewer` to view in the browser.
 
 ### diagrams-canvas-json-web (TypeScript)
 
@@ -74,10 +106,10 @@ TypeScript library for rendering canvas JSON output in the browser. Features:
    ```
 
    Or Start them manually
-   - **Start the Haskell server** (serves SVG examples on port 8080):
+   - **Start the Haskell dev server** (serves SVG + JSON examples on port 8080):
 
      ```bash
-     cabal run diagrams-canvas-json
+     cabal run diagrams-canvas-json-dev
      ```
 
    - **Start the web dev server** (serves frontend on port 3000):
@@ -91,7 +123,7 @@ TypeScript library for rendering canvas JSON output in the browser. Features:
 
 ## API Endpoints
 
-The Haskell server provides:
+The `diagrams-canvas-json-dev` server provides:
 
 | Endpoint                      | Description                      |
 | ----------------------------- | -------------------------------- |
