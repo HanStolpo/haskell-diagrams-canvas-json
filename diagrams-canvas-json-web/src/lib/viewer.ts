@@ -94,6 +94,12 @@ export interface ViewerOptions {
 
   /** Layers to render (bottom to top), command and custom layers interleaved */
   layers?: ViewerLayer[];
+
+  /** Mirror the image horizontally (flip left/right). Default: false. */
+  mirrorH?: boolean;
+
+  /** Mirror the image vertically (flip top/bottom). Default: false. */
+  mirrorV?: boolean;
 }
 
 /** Handle returned by createViewer for controlling the viewer */
@@ -111,7 +117,13 @@ export interface Viewer {
   setLayers(layers: ViewerLayer[]): void;
 
   /** Get the current view transform state */
-  getTransform(): { scale: number; tx: number; ty: number };
+  getTransform(): {
+    scale: number;
+    tx: number;
+    ty: number;
+    mirrorH: boolean;
+    mirrorV: boolean;
+  };
 
   /** Set the view transform state and re-render */
   setTransform(scale: number, tx: number, ty: number): void;
@@ -151,6 +163,8 @@ const DEFAULT_CHECKERBOARD =
  */
 export function createViewer(options: ViewerOptions): Viewer {
   const { container, bounds, padding = 0.9 } = options;
+  const mirrorH = options.mirrorH ?? false;
+  const mirrorV = options.mirrorV ?? false;
 
   let layers: ViewerLayer[] = options.layers ?? [];
 
@@ -207,8 +221,10 @@ export function createViewer(options: ViewerOptions): Viewer {
     const h = container.clientHeight;
     scale =
       dw > 0 && dh > 0 ? Math.min((w * padding) / dw, (h * padding) / dh) : 100;
-    tx = w / 2 - dcx * scale;
-    ty = h / 2 + dcy * scale;
+    const sx = mirrorH ? -scale : scale;
+    const sy = mirrorV ? scale : -scale;
+    tx = w / 2 - dcx * sx;
+    ty = h / 2 - dcy * sy;
   }
 
   function render(): void {
@@ -236,7 +252,9 @@ export function createViewer(options: ViewerOptions): Viewer {
       ctx.setTransform(pr, 0, 0, pr, 0, 0);
       ctx.clearRect(0, 0, w, h);
       ctx.save();
-      ctx.transform(scale, 0, 0, -scale, tx, ty);
+      const sx = mirrorH ? -scale : scale;
+      const sy = mirrorV ? scale : -scale;
+      ctx.transform(sx, 0, 0, sy, tx, ty);
       if (hasCommands(layer)) {
         executeCommands(ctx, layer.commands, scale);
       } else {
@@ -330,7 +348,7 @@ export function createViewer(options: ViewerOptions): Viewer {
     },
 
     getTransform() {
-      return { scale, tx, ty };
+      return { scale, tx, ty, mirrorH, mirrorV };
     },
 
     setTransform(s: number, x: number, y: number): void {

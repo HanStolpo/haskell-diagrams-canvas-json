@@ -46,6 +46,8 @@ data Opts = Opts
     -- ^ @Nothing@ means use 'defaultImageOptions' (solid white).
     , optTransparent :: !Bool
     , optJpegQuality :: !Int
+    , optMirrorH :: !Bool
+    , optMirrorV :: !Bool
     }
 
 commandParser :: ParserInfo Opts
@@ -109,6 +111,8 @@ commandParser =
                 )
             <*> switch (long "transparent" <> help "Transparent background (ignored if --background is given)")
             <*> option auto (long "jpeg-quality" <> value 85 <> metavar "N" <> help "JPEG quality 1-100 (default 85)")
+            <*> switch (long "mirror-h" <> help "Mirror the image horizontally (flip left/right)")
+            <*> switch (long "mirror-v" <> help "Mirror the image vertically (flip top/bottom)")
 
 parseFormat :: String -> Either String ImageFormat
 parseFormat s = case map toLowerC s of
@@ -163,6 +167,8 @@ main = do
                     (Nothing, True) -> BackgroundTransparent
                     (Nothing, False) -> ioBackground defaultImageOptions
                 , ioJpegQuality = optJpegQuality opts
+                , ioMirrorH = optMirrorH opts
+                , ioMirrorV = optMirrorV opts
                 }
     case optLayout opts of
         LSingle -> do

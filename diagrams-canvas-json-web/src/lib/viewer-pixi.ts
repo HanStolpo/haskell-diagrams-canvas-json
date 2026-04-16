@@ -35,6 +35,12 @@ export interface PixiViewerOptions {
 
   /** Layers to render (bottom to top), command and custom layers interleaved */
   layers?: ViewerLayer[];
+
+  /** Mirror the image horizontally (flip left/right). Default: false. */
+  mirrorH?: boolean;
+
+  /** Mirror the image vertically (flip top/bottom). Default: false. */
+  mirrorV?: boolean;
 }
 
 /** Handle returned by createPixiViewer for controlling the viewer */
@@ -52,7 +58,13 @@ export interface PixiViewer {
   setLayers(layers: ViewerLayer[]): void;
 
   /** Get the current view transform state */
-  getTransform(): { scale: number; tx: number; ty: number };
+  getTransform(): {
+    scale: number;
+    tx: number;
+    ty: number;
+    mirrorH: boolean;
+    mirrorV: boolean;
+  };
 
   /** Set the view transform state and re-render */
   setTransform(scale: number, tx: number, ty: number): void;
@@ -253,6 +265,8 @@ export async function createPixiViewer(
   options: PixiViewerOptions,
 ): Promise<PixiViewer> {
   const { container, bounds, padding = 0.9 } = options;
+  const mirrorH = options.mirrorH ?? false;
+  const mirrorV = options.mirrorV ?? false;
 
   let layers: ViewerLayer[] = options.layers ?? [];
 
@@ -320,8 +334,10 @@ export async function createPixiViewer(
       dw > 0 && dh > 0
         ? Math.min((cw * padding) / dw, (ch * padding) / dh)
         : 100;
-    tx = cw / 2 - dcx * scale;
-    ty = ch / 2 + dcy * scale;
+    const sx = mirrorH ? -scale : scale;
+    const sy = mirrorV ? scale : -scale;
+    tx = cw / 2 - dcx * sx;
+    ty = ch / 2 - dcy * sy;
   }
 
   function rebuildLayers(): void {
@@ -384,7 +400,9 @@ export async function createPixiViewer(
     // Apply pan/zoom transform in CSS pixel space
     function applyViewTransform(c: Container): void {
       c.position.set(tx, ty);
-      c.scale.set(scale, -scale);
+      const sx = mirrorH ? -scale : scale;
+      const sy = mirrorV ? scale : -scale;
+      c.scale.set(sx, sy);
     }
 
     const pw = Math.round(cw * pr);
@@ -443,7 +461,9 @@ export async function createPixiViewer(
         ctx.setTransform(pr, 0, 0, pr, 0, 0);
         ctx.clearRect(0, 0, cw, ch);
         ctx.save();
-        ctx.transform(scale, 0, 0, -scale, tx, ty);
+        const csx = mirrorH ? -scale : scale;
+        const csy = mirrorV ? scale : -scale;
+        ctx.transform(csx, 0, 0, csy, tx, ty);
         ls.render(ctx, scale);
         ctx.restore();
         ls.sprite.texture.source.resource = canvas;
@@ -549,7 +569,7 @@ export async function createPixiViewer(
     },
 
     getTransform() {
-      return { scale, tx, ty };
+      return { scale, tx, ty, mirrorH, mirrorV };
     },
 
     setTransform(s: number, x: number, y: number): void {

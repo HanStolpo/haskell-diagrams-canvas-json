@@ -87,10 +87,14 @@ data ImageOptions = ImageOptions
     , ioBackground :: !Background
     , ioJpegQuality :: !Int
     -- ^ JPEG quality 1..100 (ignored for other formats).
+    , ioMirrorH :: !Bool
+    -- ^ Mirror the image horizontally (flip left\/right).
+    , ioMirrorV :: !Bool
+    -- ^ Mirror the image vertically (flip top\/bottom).
     }
     deriving (Show, Eq)
 
--- | White background, 800x800, 10% padding, JPEG quality 85.
+-- | White background, 800x800, 10% padding, JPEG quality 85, no mirror.
 defaultImageOptions :: ImageOptions
 defaultImageOptions =
     ImageOptions
@@ -99,6 +103,8 @@ defaultImageOptions =
         , ioPadding = 0.9
         , ioBackground = BackgroundSolid 255 255 255 1
         , ioJpegQuality = 85
+        , ioMirrorH = False
+        , ioMirrorV = False
         }
 
 {- | Guess an 'ImageFormat' from a file extension (@".png"@, @".svg"@, @".jpg"@,
@@ -252,9 +258,11 @@ applyFitTransform opts bounds@(BBox minX minY maxX maxY) = do
         dcy = (minY + maxY) / 2
         w = fromIntegral (ioWidth opts) :: Double
         h = fromIntegral (ioHeight opts) :: Double
-        tx = w / 2 - dcx * scale
-        ty = h / 2 + dcy * scale
-    C.transform (Matrix scale 0 0 (-scale) tx ty)
+        sx = if ioMirrorH opts then negate scale else scale
+        sy = if ioMirrorV opts then scale else negate scale
+        tx = w / 2 - dcx * sx
+        ty = h / 2 - dcy * sy
+    C.transform (Matrix sx 0 0 sy tx ty)
 
 {- | Replace all opaque pixels of the current group with the given colour,
 preserving alpha. Mirrors the Canvas 2D @source-in@ tint in 'viewer.ts'.

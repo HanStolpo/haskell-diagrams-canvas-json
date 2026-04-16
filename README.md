@@ -82,11 +82,18 @@ Supported formats:
 - **JPEG** — the rendered pixel buffer is re-encoded via
   [JuicyPixels][juicypixels] (cairo itself has no JPEG writer)
 
-CLI mirrors the viewer's `single` and `board` subcommands but writes a file via `--out`:
+CLI mirrors the viewer's `single` and `board` subcommands but writes a file
+via `--out`. Use `--mirror-h` / `--mirror-v` to flip the image horizontally
+or vertically (e.g. to see the bottom side of a PCB as it appears when
+flipped over):
 
 ```bash
 gerber-diagrams-canvas-json board-to-json top-view.json \
   | diagrams-canvas-json-cairo board --out top.png --width 1200 --height 900
+
+# Mirrored bottom view
+gerber-diagrams-canvas-json board-to-json bottom-view.json \
+  | diagrams-canvas-json-cairo board --out bottom.png --mirror-h
 ```
 
 [gi-cairo-render]: https://hackage.haskell.org/package/gi-cairo-render
@@ -102,12 +109,21 @@ Scotty-backed page using the bundled `diagrams-canvas-json-web` Canvas 2D or Pix
 - `grid FILE` — a layer array rendered as an NxM grid
 - `stack FILE` — a layer array rendered as a toggleable stack with legend
 
-Each subcommand accepts `--pixi` (switch to PixiJS) and `--port`. If `FILE` is omitted or `-`, the viewer reads from
-stdin, so gerber output can be piped straight in:
+Each subcommand accepts `--pixi` (switch to PixiJS), `--port`,
+`--mirror-h` (flip left/right), and `--mirror-v` (flip top/bottom). If
+`FILE` is omitted or `-`, the viewer reads from stdin, so gerber output
+can be piped straight in:
 
 ```bash
 gerber-diagrams-canvas-json board-to-json board.json | diagrams-canvas-json-viewer board --pixi
+
+# View the bottom side mirrored
+gerber-diagrams-canvas-json board-to-json bottom-view.json \
+  | diagrams-canvas-json-viewer board --mirror-h
 ```
+
+Pan and zoom work normally when mirroring is active — the image is flipped
+but the mouse cursor still tracks naturally.
 
 ### gerber-diagrams-canvas-json (Haskell)
 

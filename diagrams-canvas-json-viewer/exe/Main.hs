@@ -33,10 +33,8 @@ data Layout
 -- | Which in-browser renderer to load.
 data Renderer = RCanvas | RPixi deriving (Show, Eq)
 
-{- | Parsed command-line options. Fields in order: layout, renderer, source
-('Nothing' and @Just "-"@ both read stdin), port.
--}
-data Opts = Opts !Layout !Renderer !(Maybe FilePath) !Int
+-- | Parsed command-line options: layout, renderer, source, port, mirrorH, mirrorV.
+data Opts = Opts !Layout !Renderer !(Maybe FilePath) !Int !Bool !Bool
 
 commandParser :: ParserInfo Opts
 commandParser =
@@ -61,9 +59,13 @@ commandParser =
             <$> pixiFlag
             <*> optional (argument str (metavar "FILE" <> help "Path to JSON input (default: stdin; \"-\" also reads stdin)"))
             <*> portOpt
+            <*> mirrorHFlag
+            <*> mirrorVFlag
 
     pixiFlag = flag RCanvas RPixi (long "pixi" <> help "Use the PixiJS WebGL renderer instead of Canvas 2D")
     portOpt = option auto (long "port" <> short 'p' <> value 3000 <> metavar "PORT" <> help "Port to serve on (default: 3000)")
+    mirrorHFlag = switch (long "mirror-h" <> help "Mirror the view horizontally (flip left/right)")
+    mirrorVFlag = switch (long "mirror-v" <> help "Mirror the view vertically (flip top/bottom)")
 
 --------------------------------------------------------------------------------
 -- Input
@@ -137,7 +139,7 @@ readBundle renderer = do
 
 main :: IO ()
 main = do
-    Opts layout renderer src port <- execParser commandParser
+    Opts layout renderer src port mirrorH mirrorV <- execParser commandParser
     let label = sourceLabel src
     payload <- readInput src
     bundle <- readBundle renderer
@@ -145,7 +147,7 @@ main = do
     scotty port $ do
         get "/" $ do
             setHeader "Content-Type" "text/html; charset=utf-8"
-            raw . BL.fromStrict . TE.encodeUtf8 $ viewerHtml label layout renderer
+            raw . BL.fromStrict . TE.encodeUtf8 $ viewerHtml label layout renderer mirrorH mirrorV
 
         get "/api/data" $ do
             setHeader "Content-Type" "application/json"
@@ -188,8 +190,8 @@ createCall :: Renderer -> T.Text
 createCall RCanvas = "DiagramsCanvasJson.createViewer"
 createCall RPixi = "await DiagramsCanvasJsonPixi.createPixiViewer"
 
-viewerHtml :: T.Text -> Layout -> Renderer -> T.Text
-viewerHtml title layout renderer =
+viewerHtml :: T.Text -> Layout -> Renderer -> Bool -> Bool -> T.Text
+viewerHtml title layout renderer mirrorH mirrorV =
     T.unlines
         [ "<!DOCTYPE html>"
         , "<html><head>"
@@ -208,7 +210,7 @@ viewerHtml title layout renderer =
         , "  const resp = await fetch('/api/data');"
         , "  if (!resp.ok) throw new Error('HTTP ' + resp.status);"
         , "  const data = await resp.json();"
-        , layoutBody layout renderer
+        , layoutBody layout renderer mirrorH mirrorV
         , "}"
         , "main().catch(e => {"
         , "  document.getElementById('error').textContent = 'Error: ' + e.message;"
@@ -252,31 +254,40 @@ escapeHtml = T.replace "&" "&amp;" . T.replace "<" "&lt;" . T.replace ">" "&gt;"
 {- | Emits the body of the @main()@ JS function: inspects @data@ and invokes
 the create-viewer call appropriate for the given layout.
 -}
-layoutBody :: Layout -> Renderer -> T.Text
-layoutBody LSingle renderer =
+layoutBody :: Layout -> Renderer -> Bool -> Bool -> T.Text
+layoutBody LSingle renderer mh mv =
     T.unlines
         [ "  " <> createCall renderer <> "({"
         , "    container: document.getElementById('wrap'),"
         , "    bounds: data.bounds,"
         , "    layers: [{ color: [0,0,0,1], commands: data.commands }],"
+        , mirrorOpts mh mv
         , "  });"
         ]
-layoutBody LBoard renderer =
+layoutBody LBoard renderer mh mv =
     T.unlines
         [ "  " <> createCall renderer <> "({"
         , "    container: document.getElementById('wrap'),"
         , "    bounds: data.bounds,"
         , "    layers: data.layers,"
+        , mirrorOpts mh mv
         , "  });"
         ]
-layoutBody LGrid renderer = gridLayoutJs (createCall renderer)
-layoutBody LStack renderer = stackLayoutJs (createCall renderer)
+layoutBody LGrid renderer mh mv = gridLayoutJs (createCall renderer) mh mv
+layoutBody LStack renderer mh mv = stackLayoutJs (createCall renderer) mh mv
+
+-- | Emit JS object properties for mirror flags (empty string when both false).
+mirrorOpts :: Bool -> Bool -> T.Text
+mirrorOpts False False = ""
+mirrorOpts mh mv =
+    let parts = ["mirrorH: true" | mh] ++ ["mirrorV: true" | mv]
+     in "    " <> T.intercalate ", " parts <> ","
 
 {- | Shared JavaScript for computing the NxM grid layout and creating
 the viewer with interleaved CommandLayer / MaskLayer / CustomLayer.
 -}
-gridLayoutJs :: T.Text -> T.Text
-gridLayoutJs call =
+gridLayoutJs :: T.Text -> Bool -> Bool -> T.Text
+gridLayoutJs call mh mv =
     T.unlines
         [ "  var n = data.length;"
         , "  if (n === 0) return;"
@@ -368,12 +379,13 @@ gridLayoutJs call =
         , "    container: document.getElementById('wrap'),"
         , "    bounds: bounds,"
         , "    layers: layers,"
+        , mirrorOpts mh mv
         , "  });"
         ]
 
 -- | Shared JavaScript for the stack viewer with a toggleable legend of layers.
-stackLayoutJs :: T.Text -> T.Text
-stackLayoutJs call =
+stackLayoutJs :: T.Text -> Bool -> Bool -> T.Text
+stackLayoutJs call mh mv =
     T.unlines
         [ "  var n = data.length;"
         , "  if (n === 0) return;"
@@ -545,6 +557,7 @@ stackLayoutJs call =
         , "    container: document.getElementById('wrap'),"
         , "    bounds: bounds,"
         , "    layers: layers,"
+        , mirrorOpts mh mv
         , "  });"
         , ""
         , "  // Click handler for legend toggle"
@@ -553,8 +566,10 @@ stackLayoutJs call =
         , "    var t = viewer.getTransform ? viewer.getTransform() : (viewer.then ? null : null);"
         , "    if (!t) return;"
         , "    // Convert click from CSS pixels to diagram space"
-        , "    var dx = (e.clientX - rect.left - t.tx) / t.scale;"
-        , "    var dy = -((e.clientY - rect.top - t.ty) / t.scale);"
+        , "    var sx = t.mirrorH ? -t.scale : t.scale;"
+        , "    var sy = t.mirrorV ? t.scale : -t.scale;"
+        , "    var dx = (e.clientX - rect.left - t.tx) / sx;"
+        , "    var dy = (e.clientY - rect.top - t.ty) / sy;"
         , ""
         , "    // Hit test: Show All / Hide All buttons"
         , "    function hitBtn(btn) {"

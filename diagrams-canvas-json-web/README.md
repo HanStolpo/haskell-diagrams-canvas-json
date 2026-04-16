@@ -124,6 +124,8 @@ const viewer = createViewer({
   commandLayers: layers,
   // background: '#ffffff',  // solid background (default: checkerboard)
   // padding: 0.9,           // 10% padding around diagram
+  // mirrorH: true,          // flip left/right (e.g. PCB bottom view)
+  // mirrorV: false,         // flip top/bottom
 });
 
 // Update layers dynamically
@@ -206,6 +208,8 @@ const viewer = await createPixiViewer({
   commandLayers: layers,
   // background: '#ffffff',  // solid background (default: checkerboard)
   // padding: 0.9,           // 10% padding around diagram
+  // mirrorH: true,          // flip left/right (e.g. PCB bottom view)
+  // mirrorV: false,         // flip top/bottom
 });
 
 // Update layers dynamically

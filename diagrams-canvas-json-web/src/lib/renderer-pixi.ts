@@ -424,6 +424,10 @@ export interface RenderPixiOptions {
   backgroundColor?: Color;
   /** Padding factor for fitting diagram (0-1, default: 0.9 = 10% padding) */
   padding?: number;
+  /** Mirror the image horizontally (flip left/right). Default: false. */
+  mirrorH?: boolean;
+  /** Mirror the image vertically (flip top/bottom). Default: false. */
+  mirrorV?: boolean;
 }
 
 /**
@@ -453,6 +457,8 @@ export function renderDiagramPixi(
     diagram.height,
     diagram.bounds,
     padding,
+    options.mirrorH,
+    options.mirrorV,
   );
 
   // Create root container with the fit transform

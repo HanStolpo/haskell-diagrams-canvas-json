@@ -38,6 +38,8 @@ export function calculateFitTransform(
   canvasHeight: number,
   bounds: BBox,
   padding: number = 0.9,
+  mirrorH: boolean = false,
+  mirrorV: boolean = false,
 ): {
   a: number;
   b: number;
@@ -73,17 +75,18 @@ export function calculateFitTransform(
   const centerX = (minX + maxX) / 2;
   const centerY = (minY + maxY) / 2;
 
-  // Transform: scale, flip Y, then translate to center in canvas
+  // Transform: scale, flip Y, optionally mirror, then translate to center
   // Canvas transform matrix: [a, b, c, d, e, f]
   // x' = a*x + c*y + e
   // y' = b*x + d*y + f
-  // We want: scale by 'scale', flip Y (negate d), center the result
-  const a = scale;
+  const sx = mirrorH ? -scale : scale;
+  const sy = mirrorV ? scale : -scale; // -scale is the default Y-flip
+  const a = sx;
   const b = 0;
   const c = 0;
-  const d = -scale; // Flip Y axis
-  const e = canvasWidth / 2 - centerX * scale;
-  const f = canvasHeight / 2 + centerY * scale; // + because Y is flipped
+  const d = sy;
+  const e = canvasWidth / 2 - centerX * sx;
+  const f = canvasHeight / 2 - centerY * sy;
 
   return { a, b, c, d, e, f, scale };
 }
@@ -279,6 +282,10 @@ export interface RenderOptions {
   pixelRatio?: number;
   /** Padding factor for fitting diagram (0-1, default: 0.9 = 10% padding) */
   padding?: number;
+  /** Mirror the image horizontally (flip left/right). Default: false. */
+  mirrorH?: boolean;
+  /** Mirror the image vertically (flip top/bottom). Default: false. */
+  mirrorV?: boolean;
 }
 
 /**
@@ -324,6 +331,8 @@ export function renderDiagram(
     diagram.height,
     diagram.bounds,
     padding,
+    options.mirrorH,
+    options.mirrorV,
   );
   ctx.save();
   ctx.transform(
