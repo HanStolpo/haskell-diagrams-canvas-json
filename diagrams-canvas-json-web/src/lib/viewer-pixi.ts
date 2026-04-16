@@ -234,17 +234,17 @@ function buildCustomLayerState(
   return { kind: "custom", canvas, sprite, render };
 }
 
-function destroyLayerState(state: LayerState): void {
+function destroyLayerState(state: LayerState, destroyTextures = false): void {
   if (state.kind === "command") {
     state.scene.destroy({ children: true });
-    state.renderTexture.destroy(true);
+    state.renderTexture.destroy(destroyTextures);
     state.sprite.destroy();
   } else if (state.kind === "mask") {
     state.scene.destroy({ children: true });
-    state.renderTexture.destroy(true);
+    state.renderTexture.destroy(destroyTextures);
     state.sprite.destroy();
     if (state.clipScene) state.clipScene.destroy({ children: true });
-    if (state.clipTexture) state.clipTexture.destroy(true);
+    if (state.clipTexture) state.clipTexture.destroy(destroyTextures);
     if (state.clipSprite) state.clipSprite.destroy();
   } else {
     state.sprite.destroy();
@@ -379,24 +379,6 @@ export async function createPixiViewer(
     const cw = container.clientWidth;
     const ch = container.clientHeight;
 
-    // Resize app if needed
-    if (
-      app.renderer.width !== Math.round(cw * pr) ||
-      app.renderer.height !== Math.round(ch * pr)
-    ) {
-      app.renderer.resize(cw, ch);
-      for (const ls of layerStates) {
-        if (ls.kind === "command" || ls.kind === "mask") {
-          ls.renderTexture.resize(cw, ch, pr);
-          ls.sprite.texture = ls.renderTexture;
-        }
-        if (ls.kind === "mask" && ls.clipTexture) {
-          ls.clipTexture.resize(cw, ch, pr);
-          if (ls.clipSprite) ls.clipSprite.texture = ls.clipTexture;
-        }
-      }
-    }
-
     // Apply pan/zoom transform in CSS pixel space
     function applyViewTransform(c: Container): void {
       c.position.set(tx, ty);
@@ -511,7 +493,9 @@ export async function createPixiViewer(
   }
 
   function onResize(): void {
+    app.renderer.resize(container.clientWidth, container.clientHeight);
     fitToViewport();
+    rebuildLayers();
     renderFull();
   }
 
@@ -542,7 +526,7 @@ export async function createPixiViewer(
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("resize", onResize);
       for (const ls of layerStates) {
-        destroyLayerState(ls);
+        destroyLayerState(ls, true);
       }
       layerStates = [];
       app.destroy(true);
