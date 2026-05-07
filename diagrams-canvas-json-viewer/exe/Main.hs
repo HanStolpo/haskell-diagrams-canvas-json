@@ -61,6 +61,7 @@ commandParser =
             <*> portOpt
             <*> mirrorHFlag
             <*> mirrorVFlag
+                <**> helper
 
     pixiFlag = flag RCanvas RPixi (long "pixi" <> help "Use the PixiJS WebGL renderer instead of Canvas 2D")
     portOpt = option auto (long "port" <> short 'p' <> value 3000 <> metavar "PORT" <> help "Port to serve on (default: 3000)")

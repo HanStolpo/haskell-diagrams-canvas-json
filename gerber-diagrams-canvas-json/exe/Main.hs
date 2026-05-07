@@ -63,16 +63,19 @@ commandParser =
     toJsonCmd =
         ToJson
             <$> argument str (metavar "GERBER_FILE" <> help "Path to gerber file")
+                <**> helper
 
     outlineToJsonCmd =
         OutlineToJson
             <$> argument str (metavar "GERBER_FILE" <> help "Path to outline gerber file")
+                <**> helper
 
     compositeToJsonCmd =
         CompositeToJson
             <$> argument str (metavar "BASE" <> help "Base gerber layer")
             <*> argument str (metavar "OVERLAY" <> help "Overlay gerber layer (will be inverted)")
             <*> outlineFlag
+                <**> helper
 
     clipToJsonCmd =
         ClipToJson
@@ -82,10 +85,12 @@ commandParser =
     boardToJsonCmd =
         BoardToJson
             <$> argument str (metavar "SPEC_FILE" <> help "Path to JSON board spec file")
+                <**> helper
 
     layersToJsonCmd =
         LayersToJson
             <$> some (argument str (metavar "GERBER_FILES..." <> help "Gerber files to render as named layers"))
+                <**> helper
 
     outlineFlag = switch (long "outline" <> help "Treat base layer as an outline (fill the path instead of stroking)")
 

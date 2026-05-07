@@ -113,6 +113,7 @@ commandParser =
             <*> option auto (long "jpeg-quality" <> value 85 <> metavar "N" <> help "JPEG quality 1-100 (default 85)")
             <*> switch (long "mirror-h" <> help "Mirror the image horizontally (flip left/right)")
             <*> switch (long "mirror-v" <> help "Mirror the image vertically (flip top/bottom)")
+                <**> helper
 
 parseFormat :: String -> Either String ImageFormat
 parseFormat s = case map toLowerC s of
