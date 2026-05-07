@@ -32,7 +32,7 @@ module Diagrams.Backend.CanvasJson.Cairo (
 
 import Codec.Picture qualified as JP
 import Codec.Picture.Types qualified as JPT
-import Control.Monad.State.Strict (StateT, evalStateT, get, gets, lift, modify, put)
+import Control.Monad.State.Strict (StateT, execStateT, get, gets, lift, modify, put)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
 import Data.Char (toLower)
@@ -131,10 +131,12 @@ renderCanvasDiagramTo fmt path opts cd =
             scale = fitScale opts bounds
         C.save
         applyFitTransform opts bounds
-        evalStateT
-            (executeCommands scale (cdCommands cd))
-            [initialDrawState]
-        C.restore
+        finalStack <-
+            execStateT
+                (executeCommands scale (cdCommands cd))
+                [initialDrawState]
+        -- Restore our save + any unmatched saves left by the command stream.
+        for_ [1 .. length finalStack] $ const C.restore
 
 {- | Render a 'LayeredDiagram' — each layer is drawn in isolation (so its
 @destination-out@\/@destination-in@ commands only affect that layer's
@@ -152,10 +154,13 @@ renderLayeredDiagramTo fmt path opts mld =
             C.pushGroup
             C.save
             applyFitTransform opts bounds
-            evalStateT
-                (executeCommands scale (mlCommands layer))
-                [initialDrawState]
-            C.restore
+            finalStack <-
+                execStateT
+                    (executeCommands scale (mlCommands layer))
+                    [initialDrawState]
+            -- Restore our save + any unmatched saves left by the command stream
+            -- so the cairo state is back at the pushGroup level.
+            for_ [1 .. length finalStack] $ const C.restore
             tintLayer opts (mlColor layer)
             C.popGroupToSource
             C.save
