@@ -770,7 +770,7 @@ where the context is set once using @FS@\/@KS@ and each primitive uses the
 no-args @f@\/@k@ commands.
 -}
 optimizeCommands :: [CanvasCmd] -> [CanvasCmd]
-optimizeCommands = mergeGroups . stripTransparent
+optimizeCommands = mergeSaveRestore . stripTransparent
 
 -- | Remove fills and strokes with zero alpha since they draw nothing.
 stripTransparent :: [CanvasCmd] -> [CanvasCmd]
@@ -787,50 +787,43 @@ cap, join, dash, GCO) are extracted and set once at the top of the merged group
 using @CmdSetFillColor@\/@CmdSetStrokeColor@, and the per-primitive
 @CmdFill@\/@CmdStroke@ are replaced with @CmdFillCurrent@\/@CmdStrokeCurrent@.
 -}
-mergeGroups :: [CanvasCmd] -> [CanvasCmd]
-mergeGroups [] = []
-mergeGroups (CmdSave : rest) =
-    let (group, remaining) = extractGroup 1 [] rest
-        ctx = extractContext group
-        body = stripContext group
-     in case collectMergeable ctx remaining of
-            ([], _) ->
-                -- No mergeable followers, emit original group
-                CmdSave : group ++ mergeGroups remaining
-            (bodies, remaining') ->
-                -- Merge: emit one S, context setup, all bodies, R
-                [CmdSave]
-                    ++ contextToSetCmds ctx
-                    ++ concatMap (\b -> CmdBeginPath : stripLeadingBeginPath b) (body : bodies)
-                    ++ [CmdRestore]
-                    ++ mergeGroups remaining'
-mergeGroups (cmd : rest) = cmd : mergeGroups rest
+mergeSaveRestore :: [CanvasCmd] -> [CanvasCmd]
+mergeSaveRestore [] = []
+mergeSaveRestore cmds@(x : xs) =
+    case stripSaveRestore cmds of
+        Nothing ->
+            x : mergeSaveRestore xs
+        Just (group, remaining) ->
+            case extractContext group of
+                Nothing ->
+                    -- Non-uniform context: emit group unchanged
+                    (CmdSave : group ++ [CmdRestore]) ++ mergeSaveRestore remaining
+                Just ctx ->
+                    let (merged, unmerged) = mergeWhileSameContext ctx group remaining
+                     in merged ++ mergeSaveRestore unmerged
 
--- | Extract a balanced Save/Restore group for optimization.
-extractGroup :: Int -> [CanvasCmd] -> [CanvasCmd] -> ([CanvasCmd], [CanvasCmd])
-extractGroup 0 acc rest = (reverse acc, rest)
-extractGroup _ acc [] = (reverse acc, [])
-extractGroup depth acc (CmdSave : rest) =
-    extractGroup (depth + 1) (CmdSave : acc) rest
-extractGroup depth acc (CmdRestore : rest)
-    | depth == 1 = (reverse (CmdRestore : acc), rest)
-    | otherwise = extractGroup (depth - 1) (CmdRestore : acc) rest
-extractGroup depth acc (cmd : rest) =
-    extractGroup depth (cmd : acc) rest
+mergeWhileSameContext :: GroupContext -> [CanvasCmd] -> [CanvasCmd] -> ([CanvasCmd], [CanvasCmd])
+mergeWhileSameContext ctx group next =
+    case stripSaveRestore next of
+        Just (nextGroup, nextRemaining)
+            | extractContext nextGroup == Just ctx ->
+                mergeWhileSameContext ctx (group ++ nextGroup) nextRemaining
+        _ ->
+            (CmdSave : (contextToSetCmds ctx ++ stripContext group ++ [CmdRestore]), next)
 
--- | Collect consecutive S...R groups that share the same context.
-collectMergeable :: GroupContext -> [CanvasCmd] -> ([[CanvasCmd]], [CanvasCmd])
-collectMergeable _ [] = ([], [])
-collectMergeable ctx (CmdSave : rest) =
-    let (group, remaining) = extractGroup 1 [] rest
-        ctx' = extractContext group
-     in if ctx == ctx'
-            then
-                let body = stripContext group
-                    (more, remaining') = collectMergeable ctx remaining
-                 in (body : more, remaining')
-            else ([], CmdSave : group ++ remaining)
-collectMergeable _ cmds = ([], cmds)
+-- Strip a blanced CmdSave CmdRestore from the command stream.
+--
+-- If the command stream starts with a CmdSave strip it and its balanced CmdRestore skipping
+-- over inner CmdSave and CmdRestore pairs returning
+stripSaveRestore :: [CanvasCmd] -> Maybe ([CanvasCmd], [CanvasCmd])
+stripSaveRestore (CmdSave : xs) = go (1 :: Int) [] xs
+  where
+    go _ _ [] = Nothing
+    go 1 ys (CmdRestore : xs') = Just (reverse ys, xs')
+    go d ys (CmdSave : xs') = go (d + 1) (CmdSave : ys) xs'
+    go d ys (CmdRestore : xs') = go (d - 1) (CmdRestore : ys) xs'
+    go d ys (x' : xs') = go d (x' : ys) xs'
+stripSaveRestore _ = Nothing
 
 -- | Whether a stroke uses coordinate-space or view-relative line widths.
 data StrokeMode = StrokeCoord | StrokeView
@@ -847,20 +840,68 @@ data GroupContext = GroupContext
     }
     deriving (Eq)
 
--- | Extract context-setting commands from a group's body.
-extractContext :: [CanvasCmd] -> GroupContext
-extractContext = foldr extract emptyCtx
+{- | Extract uniform context from a group's body (with the outer
+CmdSave\/CmdRestore already stripped), skipping inner CmdSave\/CmdRestore
+sections. Returns 'Nothing' if:
+
+* Any context field has conflicting values (e.g. two different fill colours).
+* A context-setting command appears after a draw it would affect — line
+  styling (cap, join, dash) after a stroke draw, or GCO after any draw —
+  because hoisting such a command would change the semantics of earlier draws.
+-}
+extractContext :: [CanvasCmd] -> Maybe GroupContext
+extractContext = go False False emptyCtx . skipSaveRestore (0 :: Int)
   where
     emptyCtx = GroupContext Nothing Nothing Nothing Nothing Nothing Nothing
-    extract (CmdFill r g b a) ctx = ctx{gcFill = Just (r, g, b, a)}
-    extract (CmdStroke r g b a lw') ctx = ctx{gcStroke = Just (StrokeCoord, r, g, b, a, lw')}
-    extract (CmdStrokeView r g b a lw') ctx = ctx{gcStroke = Just (StrokeView, r, g, b, a, lw')}
-    extract (CmdSetLineCap c) ctx = ctx{gcLineCap = Just c}
-    extract (CmdSetLineJoin j) ctx = ctx{gcLineJoin = Just j}
-    extract (CmdSetLineDash ds) ctx = ctx{gcLineDash = Just (StrokeCoord, ds)}
-    extract (CmdSetLineDashView ds) ctx = ctx{gcLineDash = Just (StrokeView, ds)}
-    extract (CmdSetGlobalCompositeOperation gco) ctx = ctx{gcGCO = Just gco}
-    extract _ ctx = ctx
+
+    -- go seenFill seenStroke ctx cmds
+    go _ _ ctx [] = Just ctx
+    -- Fill draws
+    go _ ss ctx (CmdFill r g b a : rest)
+        | isUniform (gcFill ctx) (r, g, b, a) = go True ss ctx{gcFill = Just (r, g, b, a)} rest
+        | otherwise = Nothing
+    -- Stroke draws
+    go sf _ ctx (CmdStroke r g b a lw' : rest)
+        | isUniform (gcStroke ctx) (StrokeCoord, r, g, b, a, lw') = go sf True ctx{gcStroke = Just (StrokeCoord, r, g, b, a, lw')} rest
+        | otherwise = Nothing
+    go sf _ ctx (CmdStrokeView r g b a lw' : rest)
+        | isUniform (gcStroke ctx) (StrokeView, r, g, b, a, lw') = go sf True ctx{gcStroke = Just (StrokeView, r, g, b, a, lw')} rest
+        | otherwise = Nothing
+    -- GCO affects both fills and strokes: reject after any draw
+    go sf ss ctx (CmdSetGlobalCompositeOperation gco : rest)
+        | sf || ss = Nothing
+        | isUniform (gcGCO ctx) gco = go sf ss ctx{gcGCO = Just gco} rest
+        | otherwise = Nothing
+    -- Line styling only affects strokes: reject after a stroke draw
+    go sf ss ctx (CmdSetLineCap c : rest)
+        | ss = Nothing
+        | isUniform (gcLineCap ctx) c = go sf ss ctx{gcLineCap = Just c} rest
+        | otherwise = Nothing
+    go sf ss ctx (CmdSetLineJoin j : rest)
+        | ss = Nothing
+        | isUniform (gcLineJoin ctx) j = go sf ss ctx{gcLineJoin = Just j} rest
+        | otherwise = Nothing
+    go sf ss ctx (CmdSetLineDash ds : rest)
+        | ss = Nothing
+        | isUniform (gcLineDash ctx) (StrokeCoord, ds) = go sf ss ctx{gcLineDash = Just (StrokeCoord, ds)} rest
+        | otherwise = Nothing
+    go sf ss ctx (CmdSetLineDashView ds : rest)
+        | ss = Nothing
+        | isUniform (gcLineDash ctx) (StrokeView, ds) = go sf ss ctx{gcLineDash = Just (StrokeView, ds)} rest
+        | otherwise = Nothing
+    -- Non-context, non-draw: pass through
+    go sf ss ctx (_ : rest) = go sf ss ctx rest
+
+    isUniform :: (Eq a) => Maybe a -> a -> Bool
+    isUniform Nothing _ = True
+    isUniform (Just old) val = old == val
+
+    skipSaveRestore _ [] = []
+    skipSaveRestore d (CmdRestore : xs) = skipSaveRestore (d - 1) xs
+    skipSaveRestore d (CmdSave : xs) = skipSaveRestore (d + 1) xs
+    skipSaveRestore d (x : xs)
+        | d > 0 = skipSaveRestore d xs
+        | otherwise = x : skipSaveRestore d xs
 
 -- | Convert a GroupContext to setup commands using the set-only variants.
 contextToSetCmds :: GroupContext -> [CanvasCmd]
@@ -884,26 +925,31 @@ contextToSetCmds ctx =
             (gcLineDash ctx)
         ++ maybe [] (\gco -> [CmdSetGlobalCompositeOperation gco]) (gcGCO ctx)
 
-{- | Strip context-setting commands from a group body, replacing inline
-Fill/Stroke with FillCurrent/StrokeCurrent, and removing the trailing Restore.
+{- | Strip context-setting commands from a group body with the outer CmdSave CmdRestore stipped of and not stripping commands from any inner CmdSave CmdRestore sections
+
+When stripping context-setting commands replace inline Fill/Stroke with FillCurrent/StrokeCurrent.
 -}
 stripContext :: [CanvasCmd] -> [CanvasCmd]
-stripContext = concatMap convert . filter (not . isContextOnly)
+stripContext = go (0 :: Int)
   where
-    convert CmdFill{} = [CmdFillCurrent]
-    convert CmdStroke{} = [CmdStrokeCurrent]
-    convert CmdStrokeView{} = [CmdStrokeCurrent]
-    convert CmdRestore = []
-    convert cmd = [cmd]
-
-    isContextOnly (CmdSetLineCap _) = True
-    isContextOnly (CmdSetLineJoin _) = True
-    isContextOnly (CmdSetLineDash _) = True
-    isContextOnly (CmdSetLineDashView _) = True
-    isContextOnly (CmdSetGlobalCompositeOperation _) = True
-    isContextOnly _ = False
-
--- | Strip a leading BeginPath from a body (since we add one ourselves).
-stripLeadingBeginPath :: [CanvasCmd] -> [CanvasCmd]
-stripLeadingBeginPath (CmdBeginPath : rest) = rest
-stripLeadingBeginPath cmds = cmds
+    go _ [] = []
+    -- track entering leaving CmdSave CmdRestore sections
+    go d (CmdSave : xs) = CmdSave : go (d + 1) xs
+    go d (CmdRestore : xs) = CmdRestore : go (d - 1) xs
+    -- modify the stream since we are not inside a CmdSave CmdRestore section
+    go 0 (x : xs) =
+        case x of
+            -- remapped command
+            CmdFill{} -> CmdFillCurrent : go 0 xs
+            CmdStroke{} -> CmdStrokeCurrent : go 0 xs
+            CmdStrokeView{} -> CmdStrokeCurrent : go 0 xs
+            -- filtered out command so skip
+            CmdSetLineCap _ -> go 0 xs
+            CmdSetLineJoin _ -> go 0 xs
+            CmdSetLineDash _ -> go 0 xs
+            CmdSetLineDashView _ -> go 0 xs
+            CmdSetGlobalCompositeOperation _ -> go 0 xs
+            -- not filtered out command so keep
+            _ -> x : go 0 xs
+    -- inside an inner CmdSave CmdRestore group so don't modify the stream
+    go d (x : xs) = x : go d xs
